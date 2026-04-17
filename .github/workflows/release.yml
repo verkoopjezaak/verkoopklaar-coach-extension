@@ -1,6 +1,7 @@
 name: Build & release Chrome extension
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -9,7 +10,8 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on:
+  workflow_dispatch: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -17,7 +19,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version:
+  workflow_dispatch: '20'
 
       - name: Extract version
         id: version
@@ -25,7 +28,8 @@ jobs:
         run: |
           V=$(jq -r .version manifest.json)
           echo "v=$V" >> $GITHUB_OUTPUT
-          echo "Version: $V"
+          echo "Version:
+  workflow_dispatch: $V"
 
       - name: Check tag does not exist
         id: tagcheck
