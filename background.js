@@ -4,23 +4,58 @@
 let sessionState = {
   state: 'idle', // 'idle' | 'active' | 'error'
   meetingId: null,
+  tabId: null,
   message: null,
 };
 
 let keepAliveInterval = null;
 
-// Wissel het toolbar-icoon afhankelijk van actieve sessie. Rood mic op wit =
-// sessie actief. Wit mic op rode achtergrond = idle (geen sessie).
-function setToolbarIcon(isActive) {
-  const variant = isActive ? 'active' : 'idle';
-  chrome.action.setIcon({
-    path: {
-      16: `icons/icon-${variant}-16.png`,
-      48: `icons/icon-${variant}-48.png`,
-      128: `icons/icon-${variant}-128.png`,
-    },
-  }).catch(() => { /* ignore, bv. als popup niet beschikbaar is */ });
+// Drie toolbar-icoon-states:
+// - default: grijs mic, transparant. Tab is geen Verkoopklaar meeting.
+// - ready:   wit mic op groen. Extensie kan koppelen maar sessie nog niet actief.
+// - active:  wit mic op rood. Audio wordt daadwerkelijk opgenomen.
+function setToolbarIcon(variant, tabId) {
+  const path = {
+    16: `icons/icon-${variant}-16.png`,
+    48: `icons/icon-${variant}-48.png`,
+    128: `icons/icon-${variant}-128.png`,
+  };
+  const details = tabId !== undefined ? { path, tabId } : { path };
+  chrome.action.setIcon(details).catch(() => { /* ignore */ });
 }
+
+// URL-patroon dat ook in manifest.content_scripts.matches staat.
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/meetings\/[^/]+\/join/;
+
+function urlIsMeetingPage(url) {
+  return typeof url === 'string' && MEETING_URL_RE.test(url);
+}
+
+// Zet het juiste icoon per tab op basis van URL en sessie-status.
+function refreshTabIcon(tabId, url) {
+  if (sessionState.state === 'active' && sessionState.tabId === tabId) {
+    setToolbarIcon('active', tabId);
+    return;
+  }
+  if (urlIsMeetingPage(url)) {
+    setToolbarIcon('ready', tabId);
+  } else {
+    setToolbarIcon('default', tabId);
+  }
+}
+
+// Houd alle open tabs bij voor icoon-updates.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' || changeInfo.url) {
+    refreshTabIcon(tabId, tab.url);
+  }
+});
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab) return;
+    refreshTabIcon(tabId, tab.url);
+  });
+});
 
 // Keep-alive: voorkomt service-worker-terminatie tijdens actieve sessie.
 function startKeepAlive() {
@@ -72,8 +107,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error('[coach-ext] START_SESSION fout:', err);
-        sessionState = { state: 'error', meetingId, message: err.message };
-        setToolbarIcon(false);
+        sessionState = { state: 'error', meetingId, tabId: null, message: err.message };
+        // Bij fout: laat icoon default/ready afhankelijk van huidige tab-URL
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          const t = tabs[0];
+          if (t) refreshTabIcon(t.id, t.url);
+        });
         sendResponse({ ok: false, error: err.message });
       });
     return true; // asynchrone response
@@ -95,7 +134,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
-  sessionState = { state: 'idle', meetingId, message: null };
+  sessionState = { state: 'idle', meetingId, tabId: null, message: null };
 
   // Haal de actieve tab op via activeTab permissie.
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -124,8 +163,8 @@ async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
     supabaseUrl,
   });
 
-  sessionState = { state: 'active', meetingId, message: null };
-  setToolbarIcon(true);
+  sessionState = { state: 'active', meetingId, tabId: activeTab.id, message: null };
+  setToolbarIcon('active', activeTab.id);
   startKeepAlive();
 }
 
@@ -139,6 +178,13 @@ async function handleStopSession() {
   }
 
   await closeOffscreenDocument();
-  sessionState = { state: 'idle', meetingId: null, message: null };
-  setToolbarIcon(false);
+  const endedTabId = sessionState.tabId;
+  sessionState = { state: 'idle', meetingId: null, tabId: null, message: null };
+  // Refresh icoon: als tab nog steeds een meeting-URL is, wordt hij groen (ready),
+  // anders default.
+  if (endedTabId) {
+    chrome.tabs.get(endedTabId, (tab) => {
+      if (!chrome.runtime.lastError && tab) refreshTabIcon(tab.id, tab.url);
+    });
+  }
 }

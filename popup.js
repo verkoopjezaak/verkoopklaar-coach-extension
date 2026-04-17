@@ -1,48 +1,57 @@
 // popup.js
 // Status-indicator popup voor de Verkoopklaar Coach extensie.
 
-const statusText = document.getElementById('status-text');
+const statusEl = document.getElementById('status-text');
+const statusLabel = document.getElementById('status-label-text');
+const hintEl = document.getElementById('hint');
 const stopBtn = document.getElementById('stop-btn');
 
-function renderStatus(status) {
-  if (!status || status.state === 'idle') {
-    statusText.textContent = 'Geen actieve sessie';
-    statusText.className = 'idle';
-    stopBtn.style.display = 'none';
-    return;
-  }
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/meetings\/[^/]+\/join/;
 
-  if (status.state === 'active') {
-    const label = status.meetingId
-      ? `Sessie actief: ${status.meetingId}`
-      : 'Sessie actief';
-    statusText.textContent = label;
-    statusText.className = 'active';
+function setClass(name) {
+  statusEl.className = name;
+}
+
+function render({ sessionState, onMeetingTab }) {
+  if (sessionState.state === 'active') {
+    statusLabel.textContent = 'Sessie actief - aan het opnemen';
+    hintEl.textContent = sessionState.meetingId ? `Meeting: ${sessionState.meetingId.slice(0, 8)}` : '';
+    setClass('active');
     stopBtn.style.display = 'block';
     return;
   }
-
-  if (status.state === 'error') {
-    statusText.textContent = `Fout: ${status.message || 'onbekend'}`;
-    statusText.className = 'error';
+  if (sessionState.state === 'error') {
+    statusLabel.textContent = 'Fout';
+    hintEl.textContent = sessionState.message || 'Onbekende fout';
+    setClass('error');
     stopBtn.style.display = 'none';
     return;
   }
+  if (onMeetingTab) {
+    statusLabel.textContent = 'Verbonden, klaar om te starten';
+    hintEl.textContent = 'Klik "Coach starten" in het panel rechts.';
+    setClass('ready');
+  } else {
+    statusLabel.textContent = 'Niet op een Verkoopklaar meeting';
+    hintEl.textContent = 'Open een /meetings/*/join pagina.';
+    setClass('default');
+  }
+  stopBtn.style.display = 'none';
 }
 
-// Vraag status op bij service worker
-chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
-  if (chrome.runtime.lastError) {
-    renderStatus({ state: 'error', message: chrome.runtime.lastError.message });
-    return;
-  }
-  renderStatus(response);
-});
+(async () => {
+  // Vraag sessie-status op en bepaal of huidige tab een meeting-pagina is.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const onMeetingTab = MEETING_URL_RE.test(tab?.url || '');
 
-// Stop-knop
+  chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
+    const sessionState = response ?? { state: 'idle' };
+    render({ sessionState, onMeetingTab });
+  });
+})();
+
 stopBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'STOP_SESSION' }, () => {
-    renderStatus({ state: 'idle' });
-    stopBtn.style.display = 'none';
+    render({ sessionState: { state: 'idle' }, onMeetingTab: false });
   });
 });
