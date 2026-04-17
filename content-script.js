@@ -40,6 +40,18 @@ window.addEventListener('message', (ev) => {
     handleStopRequest();
     return;
   }
+
+  // Webapp publiceert JWT + meetingId zodat de popup een start-knop kan tonen
+  // zonder eerst de pagina te hoeven aanspreken.
+  if (data.type === 'COACH_EXT_SET_CONTEXT') {
+    chrome.runtime.sendMessage({
+      type: 'SET_CONTEXT',
+      jwt: data.jwt,
+      meetingId: data.meetingId,
+      supabaseUrl,
+    }).catch(() => { /* ignore */ });
+    return;
+  }
 });
 
 // Stap 3: Verwerk start-verzoek van web-app.

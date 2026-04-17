@@ -25,7 +25,11 @@ function buildWsUrl(supabaseUrl, meetingId, jwt) {
 }
 
 async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
-  // 1. Tab-audio ophalen via chromeMediaSource
+  // 1. Tab-audio ophalen via chromeMediaSource.
+  // BELANGRIJK: Chrome vereist voor tabCapture in offscreen documents dat je
+  // zowel audio als video constraints opgeeft, anders komt er geen data
+  // binnen. De video-track stoppen we direct omdat we hem niet nodig hebben.
+  // Zie: https://developer.chrome.com/docs/extensions/reference/api/tabCapture
   tabStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -33,14 +37,29 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
         chromeMediaSourceId: streamId,
       },
     },
-    video: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: streamId,
+      },
+    },
   });
+  // Video direct stoppen - we hebben hem alleen nodig om de audio te laten flow'en.
+  tabStream.getVideoTracks().forEach((t) => t.stop());
+  console.log('[coach-ext/offscreen] tabStream audio tracks:', tabStream.getAudioTracks().length);
 
-  // 2. Microfoon-audio ophalen
+  // 2. Microfoon-audio ophalen. In offscreen document vereist dit dat de
+  // microfoon-permissie al eerder is goedgekeurd voor de extensie (via popup
+  // gesture of chrome://settings). Bij fout blijven we door op alleen tab.
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    console.log('[coach-ext/offscreen] micStream audio tracks:', micStream.getAudioTracks().length);
   } catch (err) {
     console.warn('[coach-ext/offscreen] Microfoon niet beschikbaar:', err.message);
+    chrome.runtime.sendMessage({
+      type: 'WS_EVENT',
+      payload: { type: 'error', code: 'mic_denied', message: `Microfoon niet beschikbaar: ${err.message}` },
+    }).catch(() => { /* ignore */ });
     micStream = null;
   }
 
@@ -81,20 +100,32 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
     } catch { /* negeer niet-JSON frames */ }
   };
 
-  // 6. Tab-audio worklet (source 0x02)
+  // 6. Tab-audio worklet (source 0x02).
+  // BELANGRIJK: naast de worklet moet de source ook naar audioContext.destination
+  // worden geconnect, anders mute Chrome de tab-audio voor de gebruiker EN
+  // stopt de capture-flow. Dit zorgt dat Maarten de klant hoort én dat de
+  // audio-stream actief blijft.
   const tabAudioTracks = tabStream.getAudioTracks();
   if (tabAudioTracks.length > 0) {
     tabWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
       processorOptions: { sourceLabel: 0x02 },
     });
+    let tabFrameCount = 0;
     tabWorkletNode.port.onmessage = (ev) => {
       if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
         const frame = buildMultiplexFrame(ev.data.source, ev.data.buffer);
         ws.send(frame);
+        tabFrameCount++;
+        if (tabFrameCount === 10 || tabFrameCount === 100) {
+          console.log(`[coach-ext/offscreen] tab frames verzonden: ${tabFrameCount}`);
+        }
       }
     };
     const tabSource = audioContext.createMediaStreamSource(tabStream);
     tabSource.connect(tabWorkletNode);
+    tabSource.connect(audioContext.destination); // houd afspelen actief
+  } else {
+    console.warn('[coach-ext/offscreen] tabStream heeft GEEN audio tracks');
   }
 
   // 7. Mic-audio worklet (source 0x01), indien beschikbaar
@@ -104,14 +135,21 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
       micWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
         processorOptions: { sourceLabel: 0x01 },
       });
+      let micFrameCount = 0;
       micWorkletNode.port.onmessage = (ev) => {
         if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
           const frame = buildMultiplexFrame(ev.data.source, ev.data.buffer);
           ws.send(frame);
+          micFrameCount++;
+          if (micFrameCount === 10 || micFrameCount === 100) {
+            console.log(`[coach-ext/offscreen] mic frames verzonden: ${micFrameCount}`);
+          }
         }
       };
       const micSource = audioContext.createMediaStreamSource(micStream);
       micSource.connect(micWorkletNode);
+      // Mic NIET naar destination connecten - anders krijgt Maarten zijn eigen
+      // stem terug via de luidspreker (echo).
     }
   }
 

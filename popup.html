@@ -9,7 +9,7 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       margin: 0;
       padding: 16px;
-      min-width: 240px;
+      min-width: 260px;
       background: #f2f4fb;
       color: #0b334c;
     }
@@ -61,19 +61,37 @@
       color: #6b7280;
       margin-top: 6px;
     }
-    #stop-btn {
+    .btn {
       display: none;
       width: 100%;
-      padding: 8px 12px;
-      background: #dc2626;
-      color: white;
+      padding: 10px 12px;
       border: none;
       border-radius: 8px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
+      margin-top: 6px;
+    }
+    #start-btn {
+      background: #3e8684;
+      color: white;
+    }
+    #start-btn:hover { background: #2f6d6b; }
+    #start-btn:disabled {
+      background: #d1d5db;
+      cursor: not-allowed;
+    }
+    #stop-btn {
+      background: #dc2626;
+      color: white;
     }
     #stop-btn:hover { background: #b91c1c; }
+    #version {
+      font-size: 10px;
+      color: #9ca3af;
+      text-align: right;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -86,7 +104,9 @@
     </div>
     <div id="hint"></div>
   </div>
-  <button id="stop-btn">Stop sessie</button>
+  <button id="start-btn" class="btn">Coach starten</button>
+  <button id="stop-btn" class="btn">Coach stoppen</button>
+  <div id="version"></div>
   <script src="popup.js"></script>
 </body>
 </html>

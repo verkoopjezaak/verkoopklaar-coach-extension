@@ -8,6 +8,11 @@ let sessionState = {
   message: null,
 };
 
+// Per-tab meeting-context, gevuld door de webapp via postMessage →
+// content-script → chrome.runtime.sendMessage. Popup leest hieruit om de
+// start-knop te enablen zodra een meeting-tab open staat.
+const tabContexts = new Map(); // tabId -> { jwt, meetingId, supabaseUrl, updatedAt }
+
 let keepAliveInterval = null;
 
 // Drie toolbar-icoon-states:
@@ -95,7 +100,33 @@ async function closeOffscreenDocument() {
   await chrome.offscreen.closeDocument();
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// Ruim contexten op wanneer een tab sluit of naar andere URL navigeert.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  tabContexts.delete(tabId);
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'SET_CONTEXT') {
+    const tabId = sender.tab?.id;
+    if (tabId != null) {
+      tabContexts.set(tabId, {
+        jwt: message.jwt,
+        meetingId: message.meetingId,
+        supabaseUrl: message.supabaseUrl,
+        updatedAt: Date.now(),
+      });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message.type === 'GET_CONTEXT') {
+    const tabId = message.tabId ?? sender.tab?.id;
+    const ctx = tabId != null ? tabContexts.get(tabId) : null;
+    sendResponse({ context: ctx ?? null });
+    return false;
+  }
+
   if (message.type === 'WS_EVENT') {
     // Relay coach-stream events van offscreen naar de meeting-tab zodat de
     // webapp ze kan tonen (transcript, interim, errors, ended).
@@ -116,8 +147,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'START_SESSION') {
-    const { jwt, meetingId, supabaseUrl } = message;
-    handleStartSession({ jwt, meetingId, supabaseUrl })
+    const { jwt, meetingId, supabaseUrl, initiatorTabId } = message;
+    handleStartSession({ jwt, meetingId, supabaseUrl, initiatorTabId })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error('[coach-ext] START_SESSION fout:', err);
