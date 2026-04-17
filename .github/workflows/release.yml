@@ -21,13 +21,24 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "v=$(node -p 'require(\"./manifest.json\").version')" >> $GITHUB_OUTPUT
+        shell: bash
+        run: |
+          V=$(jq -r .version manifest.json)
+          echo "v=$V" >> $GITHUB_OUTPUT
+          echo "Version: $V"
 
       - name: Check tag does not exist
         id: tagcheck
+        shell: bash
         run: |
-          if git ls-remote --tags origin "v${{ steps.version.outputs.v }}" | grep -q .; then
+          V="${{ steps.version.outputs.v }}"
+          if [ -z "$V" ] || [ "$V" = "null" ]; then
+            echo "No version extracted, aborting"
+            exit 1
+          fi
+          if git ls-remote --tags origin "v${V}" | grep -q .; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag v${V} bestaat al, skip release"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
@@ -39,32 +50,32 @@ jobs:
       - name: Write signing key
         if: steps.tagcheck.outputs.exists == 'false'
         run: |
-          echo "${{ secrets.EXTENSION_PRIVATE_KEY }}" > /tmp/extension.pem
+          printf '%s' "${{ secrets.EXTENSION_PRIVATE_KEY }}" > /tmp/extension.pem
           chmod 600 /tmp/extension.pem
+          head -1 /tmp/extension.pem
 
       - name: Pack CRX + ZIP
         if: steps.tagcheck.outputs.exists == 'false'
         run: |
-          # Maak een clean staging folder met alleen extensie-bestanden
           mkdir /tmp/ext-stage
           rsync -a --exclude '.git*' --exclude 'README.md' --exclude '.github' ./ /tmp/ext-stage/
-          # Pack CRX
           crx3 /tmp/ext-stage \
             --keyPath /tmp/extension.pem \
             --crxPath verkoopklaar-coach.crx
-          # Ook een ZIP voor Web Store submission later
-          (cd /tmp/ext-stage && zip -r /home/runner/work/verkoopklaar-coach-extension/verkoopklaar-coach-extension/verkoopklaar-coach.zip . )
+          (cd /tmp/ext-stage && zip -r "$GITHUB_WORKSPACE/verkoopklaar-coach.zip" . )
+          ls -la verkoopklaar-coach.*
 
       - name: Generate updates.xml
         if: steps.tagcheck.outputs.exists == 'false'
+        shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.v }}"
-          CRX_URL="https://github.com/verkoopjezaak/verkoopklaar-coach-extension/releases/download/v${VERSION}/verkoopklaar-coach.crx"
+          V="${{ steps.version.outputs.v }}"
+          CRX_URL="https://github.com/verkoopjezaak/verkoopklaar-coach-extension/releases/download/v${V}/verkoopklaar-coach.crx"
           cat > updates.xml <<XML
           <?xml version='1.0' encoding='UTF-8'?>
           <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
             <app appid='bjddniblpapfpeoglbmjliogmcdgfkkh'>
-              <updatecheck codebase='${CRX_URL}' version='${VERSION}' />
+              <updatecheck codebase='${CRX_URL}' version='${V}' />
             </app>
           </gupdate>
           XML
@@ -77,9 +88,9 @@ jobs:
           tag_name: v${{ steps.version.outputs.v }}
           name: v${{ steps.version.outputs.v }}
           body: |
-            Auto-generated release for Verkoopklaar Coach v${{ steps.version.outputs.v }}.
+            Auto-generated release voor Verkoopklaar Coach v${{ steps.version.outputs.v }}.
 
-            Chrome zal via het `update_url` in manifest.json automatisch detecteren dat er een nieuwe versie is, meestal binnen een paar uur, of direct bij handmatige "Update extensions"-klik in `chrome://extensions/`.
+            Chrome update_url in manifest wijst naar deze release. Binnen een paar uur detecteert Chrome automatisch, of klik handmatig "Update extensions" in chrome://extensions/.
           files: |
             verkoopklaar-coach.crx
             verkoopklaar-coach.zip
