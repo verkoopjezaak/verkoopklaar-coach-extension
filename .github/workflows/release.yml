@@ -1,0 +1,86 @@
+name: Build & release Chrome extension
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - '.github/**'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Extract version
+        id: version
+        run: echo "v=$(node -p 'require(\"./manifest.json\").version')" >> $GITHUB_OUTPUT
+
+      - name: Check tag does not exist
+        id: tagcheck
+        run: |
+          if git ls-remote --tags origin "v${{ steps.version.outputs.v }}" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install crx3 tool
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: npm install -g crx3
+
+      - name: Write signing key
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          echo "${{ secrets.EXTENSION_PRIVATE_KEY }}" > /tmp/extension.pem
+          chmod 600 /tmp/extension.pem
+
+      - name: Pack CRX + ZIP
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          # Maak een clean staging folder met alleen extensie-bestanden
+          mkdir /tmp/ext-stage
+          rsync -a --exclude '.git*' --exclude 'README.md' --exclude '.github' ./ /tmp/ext-stage/
+          # Pack CRX
+          crx3 /tmp/ext-stage \
+            --keyPath /tmp/extension.pem \
+            --crxPath verkoopklaar-coach.crx
+          # Ook een ZIP voor Web Store submission later
+          (cd /tmp/ext-stage && zip -r /home/runner/work/verkoopklaar-coach-extension/verkoopklaar-coach-extension/verkoopklaar-coach.zip . )
+
+      - name: Generate updates.xml
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.v }}"
+          CRX_URL="https://github.com/verkoopjezaak/verkoopklaar-coach-extension/releases/download/v${VERSION}/verkoopklaar-coach.crx"
+          cat > updates.xml <<XML
+          <?xml version='1.0' encoding='UTF-8'?>
+          <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+            <app appid='bjddniblpapfpeoglbmjliogmcdgfkkh'>
+              <updatecheck codebase='${CRX_URL}' version='${VERSION}' />
+            </app>
+          </gupdate>
+          XML
+          cat updates.xml
+
+      - name: Create release
+        if: steps.tagcheck.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.v }}
+          name: v${{ steps.version.outputs.v }}
+          body: |
+            Auto-generated release for Verkoopklaar Coach v${{ steps.version.outputs.v }}.
+
+            Chrome zal via het `update_url` in manifest.json automatisch detecteren dat er een nieuwe versie is, meestal binnen een paar uur, of direct bij handmatige "Update extensions"-klik in `chrome://extensions/`.
+          files: |
+            verkoopklaar-coach.crx
+            verkoopklaar-coach.zip
+            updates.xml
