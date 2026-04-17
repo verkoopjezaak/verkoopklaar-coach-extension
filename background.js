@@ -154,14 +154,21 @@ async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
   // Zorg dat het offscreen document bestaat.
   await ensureOffscreenDocument();
 
-  // Stuur de audio-start instructie naar het offscreen document.
-  await chrome.runtime.sendMessage({
+  // Stuur de audio-start instructie naar het offscreen document en wacht op
+  // bevestiging. Offscreen kan falen op getUserMedia, AudioWorklet of WebSocket.
+  const audioResponse = await chrome.runtime.sendMessage({
     type: 'START_AUDIO',
     streamId,
     jwt,
     meetingId,
     supabaseUrl,
   });
+
+  if (!audioResponse?.ok) {
+    // Ruim offscreen op zodat een volgende poging clean begint.
+    await closeOffscreenDocument().catch(() => { /* ignore */ });
+    throw new Error(audioResponse?.error || 'Offscreen audio-capture faalde');
+  }
 
   sessionState = { state: 'active', meetingId, tabId: activeTab.id, message: null };
   setToolbarIcon('active', activeTab.id);
