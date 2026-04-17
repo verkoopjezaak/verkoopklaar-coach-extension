@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Verkoopklaar Coach",
+  "version": "1.0.1",
+  "description": "Audio-capture voor de Verkoopklaar gesprekscoach. Vervangt getDisplayMedia.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://preview.verkoopjezaak.nl/client/*/meetings/*/join",
+        "https://app.verkoopjezaak.nl/client/*/meetings/*/join"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://preview.verkoopjezaak.nl/*",
+    "https://app.verkoopjezaak.nl/*"
+  ]
+}
