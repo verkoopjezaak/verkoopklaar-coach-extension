@@ -9,6 +9,19 @@ let sessionState = {
 
 let keepAliveInterval = null;
 
+// Wissel het toolbar-icoon afhankelijk van actieve sessie. Rood mic op wit =
+// sessie actief. Wit mic op rode achtergrond = idle (geen sessie).
+function setToolbarIcon(isActive) {
+  const variant = isActive ? 'active' : 'idle';
+  chrome.action.setIcon({
+    path: {
+      16: `icons/icon-${variant}-16.png`,
+      48: `icons/icon-${variant}-48.png`,
+      128: `icons/icon-${variant}-128.png`,
+    },
+  }).catch(() => { /* ignore, bv. als popup niet beschikbaar is */ });
+}
+
 // Keep-alive: voorkomt service-worker-terminatie tijdens actieve sessie.
 function startKeepAlive() {
   if (keepAliveInterval) return;
@@ -60,6 +73,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((err) => {
         console.error('[coach-ext] START_SESSION fout:', err);
         sessionState = { state: 'error', meetingId, message: err.message };
+        setToolbarIcon(false);
         sendResponse({ ok: false, error: err.message });
       });
     return true; // asynchrone response
@@ -111,6 +125,7 @@ async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
   });
 
   sessionState = { state: 'active', meetingId, message: null };
+  setToolbarIcon(true);
   startKeepAlive();
 }
 
@@ -125,4 +140,5 @@ async function handleStopSession() {
 
   await closeOffscreenDocument();
   sessionState = { state: 'idle', meetingId: null, message: null };
+  setToolbarIcon(false);
 }
