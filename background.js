@@ -96,6 +96,20 @@ async function closeOffscreenDocument() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'WS_EVENT') {
+    // Relay coach-stream events van offscreen naar de meeting-tab zodat de
+    // webapp ze kan tonen (transcript, interim, errors, ended).
+    const targetTabId = sessionState.tabId;
+    if (targetTabId != null) {
+      chrome.tabs.sendMessage(targetTabId, {
+        type: 'COACH_EXT_WS_EVENT',
+        payload: message.payload,
+      }).catch(() => { /* content-script kan weg zijn */ });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message.type === 'GET_STATUS') {
     sendResponse(sessionState);
     return false; // synchrone response

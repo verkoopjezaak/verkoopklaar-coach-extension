@@ -68,6 +68,17 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
 
   ws.onclose = () => {
     console.log('[coach-ext/offscreen] WebSocket gesloten');
+    chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: { type: 'closed' } }).catch(() => { /* ignore */ });
+  };
+
+  // Forward coach-stream berichten (utterance/interim/session_started/error/ended)
+  // naar de service worker zodat die ze kan relayen naar de webapp.
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return;
+    try {
+      const parsed = JSON.parse(ev.data);
+      chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: parsed }).catch(() => { /* ignore */ });
+    } catch { /* negeer niet-JSON frames */ }
   };
 
   // 6. Tab-audio worklet (source 0x02)

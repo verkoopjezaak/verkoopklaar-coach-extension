@@ -83,6 +83,13 @@ function handleStartRequest(data) {
   );
 }
 
+// Luister op WS_EVENT relays van de service worker en forward naar de webapp.
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'COACH_EXT_WS_EVENT' && message.payload) {
+    window.postMessage({ type: 'COACH_EXT_WS_EVENT', payload: message.payload }, '*');
+  }
+});
+
 // Stop-verzoek verwerken.
 function handleStopRequest() {
   chrome.runtime.sendMessage({ type: 'STOP_SESSION' }, () => {
