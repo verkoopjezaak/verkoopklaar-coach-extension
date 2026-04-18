@@ -1,67 +1,112 @@
 // popup.js
-// Status + start/stop knoppen voor de Verkoopklaar Coach extensie.
-// De popup is de primaire trigger: een klik hier telt als extension-invocation
-// waarmee activeTab permissies geldig worden voor chrome.tabCapture.
+// Checkpoints-georiënteerde UI: tab OK? meeting-context? mic toestemming?
+// Start is pas klikbaar als alle drie groen zijn. Reset-knop voor panic-undo.
 
-const statusEl = document.getElementById('status-text');
-const statusLabel = document.getElementById('status-label-text');
+const checkTab = document.getElementById('check-tab');
+const textTab = document.getElementById('text-tab');
+const checkContext = document.getElementById('check-context');
+const textContext = document.getElementById('text-context');
+const checkMic = document.getElementById('check-mic');
+const textMic = document.getElementById('text-mic');
+const currentStateEl = document.getElementById('current-state');
 const hintEl = document.getElementById('hint');
+
 const startBtn = document.getElementById('start-btn');
 const micBtn = document.getElementById('mic-btn');
 const stopBtn = document.getElementById('stop-btn');
+const resetBtn = document.getElementById('reset-btn');
 const versionEl = document.getElementById('version');
 
 const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/meetings\/[^/]+\/join/;
 
 let currentTab = null;
-let currentContext = null; // { jwt, meetingId, supabaseUrl }
+let currentContext = null;
 
-function setClass(name) {
-  statusEl.className = name;
+function setCheck(el, state, ok, pending, error) {
+  el.classList.remove('ok', 'pending', 'missing', 'error');
+  if (state === 'ok') { el.classList.add('ok'); el.textContent = '✓'; }
+  else if (state === 'pending') { el.classList.add('pending'); el.textContent = '…'; }
+  else if (state === 'error') { el.classList.add('error'); el.textContent = '✗'; }
+  else { el.classList.add('missing'); el.textContent = '·'; }
 }
 
 function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
   startBtn.style.display = 'none';
   stopBtn.style.display = 'none';
   micBtn.style.display = 'none';
+  resetBtn.style.display = 'none';
 
-  // Toon 'Microfoon autoriseren' knop zolang permissie niet expliciet granted is.
-  // 'prompt' betekent nog niet beslist, 'denied' expliciet geweigerd - in beide
-  // gevallen moet gebruiker hem via de dedicated tab autoriseren.
+  // Checkpoint 1: zit gebruiker op een meeting-join pagina?
+  setCheck(checkTab, onMeetingTab ? 'ok' : 'missing');
+  textTab.textContent = onMeetingTab ? 'Op meeting-pagina' : 'Open een meeting-pagina';
+
+  // Checkpoint 2: heeft de webapp al context (jwt + meetingId) gepushed?
+  if (!onMeetingTab) {
+    setCheck(checkContext, 'missing');
+    textContext.textContent = 'Meeting-context (wacht op pagina)';
+  } else if (hasContext) {
+    setCheck(checkContext, 'ok');
+    textContext.textContent = 'Meeting-context ontvangen';
+  } else {
+    setCheck(checkContext, 'pending');
+    textContext.textContent = 'Wacht op meeting-context...';
+  }
+
+  // Checkpoint 3: microfoon geautoriseerd?
+  if (micPermission === 'granted') {
+    setCheck(checkMic, 'ok');
+    textMic.textContent = 'Microfoon geautoriseerd';
+  } else if (micPermission === 'denied') {
+    setCheck(checkMic, 'error');
+    textMic.textContent = 'Microfoon geweigerd (klik om opnieuw)';
+  } else {
+    setCheck(checkMic, 'missing');
+    textMic.textContent = 'Microfoon autoriseren';
+  }
+
+  // Actieve sessie
+  if (sessionState.state === 'active') {
+    currentStateEl.className = 'active';
+    currentStateEl.textContent = '● Sessie actief, aan het opnemen';
+    hintEl.textContent = '';
+    stopBtn.style.display = 'block';
+    resetBtn.style.display = 'block';
+    return;
+  }
+
+  // Foutstaat
+  if (sessionState.state === 'error') {
+    currentStateEl.className = 'error';
+    currentStateEl.textContent = '● Fout: ' + (sessionState.message || 'onbekend');
+    hintEl.textContent = 'Klik Reset om de extensie-staat op te ruimen en opnieuw te proberen.';
+    resetBtn.style.display = 'block';
+    return;
+  }
+
+  // Idle: toon juiste knop op basis van vereisten
+  currentStateEl.className = '';
+  currentStateEl.textContent = 'Niet actief';
+
   if (micPermission !== 'granted') {
     micBtn.style.display = 'block';
+    hintEl.textContent = 'Autoriseer eerst de microfoon. Daarna kun je de coach starten.';
+    return;
   }
 
-  if (sessionState.state === 'active') {
-    statusLabel.textContent = 'Sessie actief, aan het opnemen';
-    hintEl.textContent = sessionState.meetingId ? `Meeting: ${sessionState.meetingId.slice(0, 8)}` : '';
-    setClass('active');
-    stopBtn.style.display = 'block';
-    return;
-  }
-  if (sessionState.state === 'error') {
-    statusLabel.textContent = 'Fout';
-    hintEl.textContent = sessionState.message || 'Onbekende fout';
-    setClass('error');
-    if (onMeetingTab && hasContext) startBtn.style.display = 'block';
-    return;
-  }
   if (!onMeetingTab) {
-    statusLabel.textContent = 'Niet op een Verkoopklaar meeting';
-    hintEl.textContent = 'Open een /meetings/*/join pagina.';
-    setClass('default');
+    hintEl.textContent = 'Open een Verkoopklaar meeting (/meetings/*/join).';
     return;
   }
+
   if (!hasContext) {
-    statusLabel.textContent = 'Wacht op meeting-context';
-    hintEl.textContent = 'Herlaad de pagina als dit blijft staan.';
-    setClass('default');
+    hintEl.textContent = 'Herlaad de meeting-pagina als dit blijft staan.';
     return;
   }
-  statusLabel.textContent = 'Klaar om te starten';
-  hintEl.textContent = 'Klik "Coach starten" om audio op te nemen.';
-  setClass('ready');
+
+  // Alles groen: start klikbaar
   startBtn.style.display = 'block';
+  startBtn.disabled = false;
+  hintEl.textContent = 'Alles klaar. Klik "Coach starten".';
 }
 
 async function refresh() {
@@ -84,28 +129,20 @@ async function refresh() {
     });
   }
 
-  // Check mic-permission voor de extensie-origin. Permissions API geeft
-  // 'granted' / 'prompt' / 'denied' terug per origin. Als nog nooit granted,
-  // moet gebruiker via de dedicated permissie-tab.
   let micPermission = 'prompt';
   try {
     const status = await navigator.permissions.query({ name: 'microphone' });
     micPermission = status.state;
-  } catch { /* fallback: treat as not granted */ }
+  } catch { /* fallback: niet gegrant */ }
 
   render({ sessionState, onMeetingTab, hasContext: !!currentContext, micPermission });
 }
 
-startBtn.addEventListener('click', async () => {
+startBtn.addEventListener('click', () => {
   if (!currentContext || !currentTab?.id) return;
   startBtn.disabled = true;
-  statusLabel.textContent = 'Starten...';
+  currentStateEl.textContent = 'Starten...';
   hintEl.textContent = '';
-
-  // Geen mic-probe meer in popup: het popup-venster sluit zodra het Chrome
-  // toestemmings-dialoog focus krijgt, waardoor getUserMedia direct cancelt
-  // (false-negative "microfoon geweigerd"). Permissie wordt nu via de
-  // dedicated mic-permission.html tab geregeld (mic-btn hieronder).
 
   chrome.runtime.sendMessage(
     {
@@ -120,18 +157,15 @@ startBtn.addEventListener('click', async () => {
       if (response?.ok) {
         refresh();
       } else {
-        statusLabel.textContent = 'Start mislukt';
-        hintEl.textContent = response?.error || 'Onbekende fout';
-        setClass('error');
+        currentStateEl.className = 'error';
+        currentStateEl.textContent = '● Start mislukt';
+        hintEl.textContent = response?.error || 'Onbekende fout. Probeer Reset.';
       }
     }
   );
 });
 
 micBtn.addEventListener('click', () => {
-  // Open permissie-pagina als volwaardige tab. Alleen een echte browser-tab
-  // blijft open tijdens Chrome's toestemmings-dialoog (popup of window-type
-  // sluiten bij focus-verlies, waardoor getUserMedia silent cancelt).
   chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
 });
 
@@ -141,7 +175,18 @@ stopBtn.addEventListener('click', () => {
   });
 });
 
+resetBtn.addEventListener('click', () => {
+  currentStateEl.textContent = 'Resetten...';
+  hintEl.textContent = '';
+  chrome.runtime.sendMessage({ type: 'RESET_SESSION' }, () => {
+    refresh();
+  });
+});
+
 const manifest = chrome.runtime.getManifest();
 versionEl.textContent = `v${manifest.version}`;
 
 refresh();
+// Repoll every 2s zodat context-updates of state-changes vanzelf doorkomen
+// zonder dat gebruiker de popup moet sluiten/openen.
+setInterval(refresh, 2000);

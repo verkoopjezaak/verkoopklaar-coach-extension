@@ -173,6 +173,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // asynchrone response
   }
 
+  if (message.type === 'RESET_SESSION') {
+    // Harde reset: forceer idle-state, teardown offscreen, reset alle flags.
+    // Gebruikt door de popup Reset-knop na een error zodat de volgende start
+    // niet op residual state loopt (actieve tab-streams, oude session-id).
+    handleResetSession()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.error('[coach-ext] RESET_SESSION fout:', err);
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true;
+  }
+
   // Doorsturingen van offscreen document naar content-script worden hier niet
   // behandeld; offscreen stuurt zelf statussen via chrome.runtime.sendMessage.
   return false;
@@ -245,6 +258,26 @@ async function handleStopSession() {
   sessionState = { state: 'idle', meetingId: null, tabId: null, message: null };
   // Refresh icoon: als tab nog steeds een meeting-URL is, wordt hij groen (ready),
   // anders default.
+  if (endedTabId) {
+    chrome.tabs.get(endedTabId, (tab) => {
+      if (!chrome.runtime.lastError && tab) refreshTabIcon(tab.id, tab.url);
+    });
+  }
+}
+
+async function handleResetSession() {
+  // Zelfde cleanup als stop, maar werkt ongeacht huidige sessionState
+  // (error, idle, stale). Gebruikt als panic-button in de popup.
+  stopKeepAlive();
+  try { await chrome.runtime.sendMessage({ type: 'STOP_AUDIO' }); } catch { /* offscreen ontbreekt */ }
+  await closeOffscreenDocument().catch(() => { /* ignore */ });
+  const endedTabId = sessionState.tabId;
+  sessionState = { state: 'idle', meetingId: null, tabId: null, message: null };
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const t = tabs[0];
+    if (t) refreshTabIcon(t.id, t.url);
+  });
+  // Zorg dat icoon van de vorige sessie-tab ook gerefresh wordt.
   if (endedTabId) {
     chrome.tabs.get(endedTabId, (tab) => {
       if (!chrome.runtime.lastError && tab) refreshTabIcon(tab.id, tab.url);

@@ -9,7 +9,7 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       margin: 0;
       padding: 16px;
-      min-width: 260px;
+      min-width: 280px;
       background: #f2f4fb;
       color: #0b334c;
     }
@@ -18,48 +18,62 @@
       font-weight: 700;
       margin: 0 0 12px 0;
       color: #0b334c;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
-    #status-box {
+    .status-card {
       background: white;
       border-radius: 8px;
       padding: 12px;
       margin-bottom: 12px;
       border: 1px solid #e5e7eb;
     }
-    #status-label {
-      font-size: 12px;
+    .status-label {
+      font-size: 11px;
       color: #6b7280;
-      margin-bottom: 4px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
       font-weight: 600;
+      margin-bottom: 6px;
     }
-    #status-text {
-      font-size: 13px;
-      font-weight: 600;
+    .status-row {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 13px;
+      color: #374151;
     }
-    #status-text .dot {
-      width: 8px;
-      height: 8px;
+    .status-row .check {
+      width: 16px;
+      height: 16px;
       border-radius: 50%;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      flex-shrink: 0;
     }
-    #status-text.default { color: #6b7280; }
-    #status-text.default .dot { background: #9ca3af; }
-    #status-text.ready { color: #16a34a; }
-    #status-text.ready .dot { background: #16a34a; }
-    #status-text.active { color: #dc2626; }
-    #status-text.active .dot { background: #dc2626; animation: pulse 1.2s ease-in-out infinite; }
-    #status-text.error { color: #dc2626; }
-    #status-text.error .dot { background: #dc2626; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .status-row .check.ok { background: #d1fae5; color: #065f46; }
+    .status-row .check.pending { background: #fef3c7; color: #92400e; }
+    .status-row .check.missing { background: #e5e7eb; color: #9ca3af; }
+    .status-row .check.error { background: #fee2e2; color: #991b1b; }
+    #current-state {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #f3f4f6;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    #current-state.active { color: #dc2626; font-weight: 600; }
+    #current-state.error { color: #dc2626; font-weight: 600; }
     #hint {
       font-size: 12px;
       color: #6b7280;
-      margin-top: 6px;
+      margin-top: 8px;
+      line-height: 1.4;
     }
     .btn {
       display: none;
@@ -76,16 +90,27 @@
       background: #3e8684;
       color: white;
     }
-    #start-btn:hover { background: #2f6d6b; }
+    #start-btn:hover:not(:disabled) { background: #2f6d6b; }
     #start-btn:disabled {
       background: #d1d5db;
       cursor: not-allowed;
     }
+    #mic-btn {
+      background: #0b334c;
+      color: white;
+    }
+    #mic-btn:hover { background: #082736; }
     #stop-btn {
       background: #dc2626;
       color: white;
     }
     #stop-btn:hover { background: #b91c1c; }
+    #reset-btn {
+      background: transparent;
+      color: #6b7280;
+      border: 1px solid #e5e7eb;
+    }
+    #reset-btn:hover { background: #f9fafb; color: #374151; }
     #version {
       font-size: 10px;
       color: #9ca3af;
@@ -95,18 +120,30 @@
   </style>
 </head>
 <body>
-  <h1>Verkoopklaar Coach</h1>
-  <div id="status-box">
-    <div id="status-label">Status</div>
-    <div id="status-text" class="default">
-      <span class="dot"></span>
-      <span id="status-label-text">Laden...</span>
+  <h1>
+    <span>Verkoopklaar Coach</span>
+  </h1>
+  <div class="status-card">
+    <div class="status-label">Vereisten</div>
+    <div class="status-row" id="row-tab">
+      <span class="check missing" id="check-tab">·</span>
+      <span id="text-tab">Open een meeting-pagina</span>
     </div>
+    <div class="status-row" id="row-context">
+      <span class="check missing" id="check-context">·</span>
+      <span id="text-context">Meeting-context laden</span>
+    </div>
+    <div class="status-row" id="row-mic">
+      <span class="check missing" id="check-mic">·</span>
+      <span id="text-mic">Microfoon autoriseren</span>
+    </div>
+    <div id="current-state">Niet actief</div>
     <div id="hint"></div>
   </div>
+  <button id="mic-btn" class="btn">Microfoon autoriseren</button>
   <button id="start-btn" class="btn">Coach starten</button>
-  <button id="mic-btn" class="btn" style="background: #6b7280; color: white;">Microfoon autoriseren</button>
   <button id="stop-btn" class="btn">Coach stoppen</button>
+  <button id="reset-btn" class="btn">Reset (opnieuw beginnen)</button>
   <div id="version"></div>
   <script src="popup.js"></script>
 </body>
