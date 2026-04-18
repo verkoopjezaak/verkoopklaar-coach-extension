@@ -50,8 +50,12 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
       },
     },
   });
-  // Video direct stoppen - we hebben hem alleen nodig om de audio te laten flow'en.
-  tabStream.getVideoTracks().forEach((t) => t.stop());
+  // Video-track NIET stoppen: Chrome's tabCapture silence-t de audio-flow als
+  // we direct .stop() aanroepen op de video-track. Disable + detach volstaat
+  // om geen CPU te verspillen aan video-rendering zonder de audio stroom te
+  // onderbreken (bevestigd via 1.0.9 diagnostic: met .stop() slechts 1.5
+  // frames/sec i.p.v. de verwachte 10).
+  tabStream.getVideoTracks().forEach((t) => { t.enabled = false; });
   console.log('[coach-ext/offscreen] tabStream audio tracks:', tabStream.getAudioTracks().length);
 
   // 2. Microfoon-audio ophalen. In offscreen document vereist dit dat de

@@ -84,6 +84,21 @@ startBtn.addEventListener('click', async () => {
   statusLabel.textContent = 'Starten...';
   hintEl.textContent = '';
 
+  // Mic-permissie afdwingen vanuit user-gesture context (popup klik).
+  // Offscreen document kan silent falen op getUserMedia als de permissie niet
+  // eerder expliciet is gevraagd. Door de prompt hier te triggeren wordt hij
+  // eenmalig gegrant voor de extensie-origin en erft offscreen hem daarna.
+  try {
+    const micProbe = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micProbe.getTracks().forEach((t) => t.stop());
+  } catch (err) {
+    startBtn.disabled = false;
+    statusLabel.textContent = 'Microfoon geweigerd';
+    hintEl.textContent = 'Sta microfoon toe via het Chrome-icoontje links in de adresbalk.';
+    setClass('error');
+    return;
+  }
+
   chrome.runtime.sendMessage(
     {
       type: 'START_SESSION',
