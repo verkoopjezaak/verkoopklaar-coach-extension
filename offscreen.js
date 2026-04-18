@@ -10,6 +10,12 @@ let micStream = null;
 let tabStream = null;
 let ws = null;
 
+// Diagnostische counters + interval. Module-scope zodat de periodieke broadcast
+// (1.0.9) dezelfde waarden ziet als de worklet-message handlers.
+let tabFrameCount = 0;
+let micFrameCount = 0;
+let diagnosticInterval = null;
+
 // Lees de worklet-code als string voor Blob URL (omzeilt CSP in offscreen context).
 // Alternatief: verwijs naar worklet-processor.js via relatief pad.
 // In offscreen document werkt chrome.runtime.getURL() voor extensie-resources.
@@ -110,7 +116,6 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
     tabWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
       processorOptions: { sourceLabel: 0x02 },
     });
-    let tabFrameCount = 0;
     tabWorkletNode.port.onmessage = (ev) => {
       if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
         const frame = buildMultiplexFrame(ev.data.source, ev.data.buffer);
@@ -135,7 +140,6 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
       micWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
         processorOptions: { sourceLabel: 0x01 },
       });
-      let micFrameCount = 0;
       micWorkletNode.port.onmessage = (ev) => {
         if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
           const frame = buildMultiplexFrame(ev.data.source, ev.data.buffer);
@@ -154,6 +158,25 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
   }
 
   console.log('[coach-ext/offscreen] Audio-capture gestart');
+
+  // 8. Diagnostische broadcast (1.0.9). Elke 2s sturen we de actuele state
+  // door naar de service worker, die het weer via WS_EVENT → content-script
+  // → webapp relayt. Hiermee zien we zonder DevTools of tabCapture audio-tracks
+  // levert, of de AudioContext draait, of ws open is, en of frames toenemen.
+  if (diagnosticInterval) clearInterval(diagnosticInterval);
+  diagnosticInterval = setInterval(() => {
+    const payload = {
+      type: 'ext_diagnostic',
+      audioContextState: audioContext?.state ?? 'none',
+      tabAudioTracks: tabStream?.getAudioTracks().length ?? 0,
+      micAudioTracks: micStream?.getAudioTracks().length ?? 0,
+      tabFrameCount,
+      micFrameCount,
+      wsReadyState: ws?.readyState ?? -1,
+      timestamp: Date.now(),
+    };
+    chrome.runtime.sendMessage({ type: 'WS_EVENT', payload }).catch(() => { /* ignore */ });
+  }, 2000);
 }
 
 // Bouwt multiplexed binary frame: 1-byte source-header + PCM16 data.
@@ -166,6 +189,14 @@ function buildMultiplexFrame(source, pcm16Buffer) {
 }
 
 async function stopAudio() {
+  // Stop diagnostic broadcast.
+  if (diagnosticInterval) {
+    clearInterval(diagnosticInterval);
+    diagnosticInterval = null;
+  }
+  tabFrameCount = 0;
+  micFrameCount = 0;
+
   // Stop worklets
   try { micWorkletNode?.disconnect(); } catch { /* ignore */ }
   try { tabWorkletNode?.disconnect(); } catch { /* ignore */ }
