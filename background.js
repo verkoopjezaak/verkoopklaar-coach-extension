@@ -181,6 +181,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
   sessionState = { state: 'idle', meetingId, tabId: null, message: null };
 
+  // Teardown van eventuele oude offscreen-context. Als een vorige sessie
+  // crashte of de WebSocket dropte zonder stopAudio(), houdt offscreen nog
+  // actieve tab-capture streams. Een nieuwe getMediaStreamId() op dezelfde
+  // tab faalt dan met "Cannot capture a tab with an active stream". Voorkom
+  // dat door altijd schoon te beginnen.
+  stopKeepAlive();
+  try {
+    await chrome.runtime.sendMessage({ type: 'STOP_AUDIO' });
+  } catch { /* offscreen bestond niet, prima */ }
+  await closeOffscreenDocument().catch(() => { /* ignore */ });
+
   // Haal de actieve tab op via activeTab permissie.
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab?.id) {

@@ -78,6 +78,10 @@ function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
         type: 'WS_EVENT',
         payload: { type: 'error', code: 'reconnect_failed', message: `Reconnect mislukt na ${MAX_RECONNECT_ATTEMPTS} pogingen (code=${lastCloseInfo.code})` },
       }).catch(() => { /* ignore */ });
+      // Ook audio-pipeline volledig afsluiten zodat tabCapture vrij komt en
+      // de volgende start-poging niet op "Cannot capture a tab with an active
+      // stream" loopt.
+      void stopAudio();
       return;
     }
     reconnectAttempts += 1;

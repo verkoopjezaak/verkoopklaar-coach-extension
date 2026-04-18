@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Verkoopklaar Coach",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Audio-capture voor de Verkoopklaar gesprekscoach. Vervangt getDisplayMedia.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArmD+I3sUL9AoXWbqGHSqZOZ8RwiyZGn4p4sNPD0NoLm5AVTNJ5yUFoStT1o1WfQT0Ru9tQK+CthWJ6h/S+4WqFJvZDFkSex/OqVdY9BukZdNaS/sPLVxjSUx0/X/hN62enUsWkcFoeVuYseKJOzr/p7mhrIbnZKxiP99w7kOaQXqCjgF6vneKhF2QvcdYz9vd3BzwKQQH2uobl5j8o16SMBj7rLILyHBicjNYcdv7O2BHJRdil0eQnaaSSTlOBSVhfD0gmACJYFlJ+JsLFQHAx2ehlw+qY5o1fHTbt5Rd/pxmE+cVl62L8s3t3zVdW1+VlRIXX8K+hO30TiPFxVTZQIDAQAB",
   "update_url": "https://github.com/verkoopjezaak/verkoopklaar-coach-extension/releases/latest/download/updates.xml",
