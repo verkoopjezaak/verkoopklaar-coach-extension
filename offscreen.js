@@ -16,6 +16,18 @@ let tabFrameCount = 0;
 let micFrameCount = 0;
 let diagnosticInterval = null;
 
+// Reconnect bookkeeping (1.0.12). Audio-streams en AudioContext blijven in
+// leven over reconnects heen - alleen de WS vervangen we. Zonder dit herstelde
+// de extensie niet van transient WS drops en moest gebruiker handmatig opnieuw
+// starten.
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let stopRequested = false;
+let lastSessionArgs = null; // { jwt, meetingId, supabaseUrl }
+let lastCloseInfo = { code: null, reason: null, clean: null };
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_BASE_DELAY_MS = 1000;
+
 // Lees de worklet-code als string voor Blob URL (omzeilt CSP in offscreen context).
 // Alternatief: verwijs naar worklet-processor.js via relatief pad.
 // In offscreen document werkt chrome.runtime.getURL() voor extensie-resources.
@@ -28,6 +40,63 @@ function buildWsUrl(supabaseUrl, meetingId, jwt) {
   const wsBase = supabaseUrl.replace(/^https?:\/\//, 'wss://');
   const params = new URLSearchParams({ meeting_id: meetingId, token: jwt });
   return `${wsBase}/functions/v1/coach-stream?${params.toString()}`;
+}
+
+// Open alleen de WebSocket (niet de audio-pipeline). Wordt gebruikt bij
+// eerste start + bij reconnects zodat streams/worklets behouden blijven.
+function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
+  const wsUrl = buildWsUrl(supabaseUrl, meetingId, jwt);
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    console.log(`[coach-ext/offscreen] WebSocket verbonden${isReconnect ? ' (reconnect)' : ''}`);
+    reconnectAttempts = 0;
+    lastCloseInfo = { code: null, reason: null, clean: null };
+  };
+
+  ws.onerror = (err) => {
+    console.error('[coach-ext/offscreen] WebSocket fout:', err);
+  };
+
+  ws.onclose = (ev) => {
+    lastCloseInfo = { code: ev?.code ?? null, reason: ev?.reason ?? null, clean: ev?.wasClean ?? null };
+    console.log(`[coach-ext/offscreen] WebSocket gesloten: code=${lastCloseInfo.code} reason=${lastCloseInfo.reason} clean=${lastCloseInfo.clean}`);
+    chrome.runtime.sendMessage({
+      type: 'WS_EVENT',
+      payload: { type: 'closed', code: lastCloseInfo.code, reason: lastCloseInfo.reason, clean: lastCloseInfo.clean },
+    }).catch(() => { /* ignore */ });
+
+    // Reconnect-logica. Alleen doen als:
+    // - gebruiker geen stop heeft aangevraagd
+    // - de audio-pipeline nog leeft
+    // - we nog pogingen over hebben
+    if (stopRequested) return;
+    if (!audioContext || !lastSessionArgs) return;
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      chrome.runtime.sendMessage({
+        type: 'WS_EVENT',
+        payload: { type: 'error', code: 'reconnect_failed', message: `Reconnect mislukt na ${MAX_RECONNECT_ATTEMPTS} pogingen (code=${lastCloseInfo.code})` },
+      }).catch(() => { /* ignore */ });
+      return;
+    }
+    reconnectAttempts += 1;
+    const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1); // 1s, 2s, 4s
+    console.log(`[coach-ext/offscreen] Reconnect poging ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} over ${delay}ms`);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      if (stopRequested) return;
+      openWebSocket(lastSessionArgs, true);
+    }, delay);
+  };
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return;
+    try {
+      const parsed = JSON.parse(ev.data);
+      chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: parsed }).catch(() => { /* ignore */ });
+    } catch { /* negeer niet-JSON frames */ }
+  };
 }
 
 async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
@@ -82,33 +151,11 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
   // 4. AudioWorklet laden via extensie-URL (geen remote code vereist)
   await audioContext.audioWorklet.addModule(WORKLET_URL);
 
-  // 5. WebSocket openen
-  const wsUrl = buildWsUrl(supabaseUrl, meetingId, jwt);
-  ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => {
-    console.log('[coach-ext/offscreen] WebSocket verbonden');
-  };
-
-  ws.onerror = (err) => {
-    console.error('[coach-ext/offscreen] WebSocket fout:', err);
-  };
-
-  ws.onclose = () => {
-    console.log('[coach-ext/offscreen] WebSocket gesloten');
-    chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: { type: 'closed' } }).catch(() => { /* ignore */ });
-  };
-
-  // Forward coach-stream berichten (utterance/interim/session_started/error/ended)
-  // naar de service worker zodat die ze kan relayen naar de webapp.
-  ws.onmessage = (ev) => {
-    if (typeof ev.data !== 'string') return;
-    try {
-      const parsed = JSON.parse(ev.data);
-      chrome.runtime.sendMessage({ type: 'WS_EVENT', payload: parsed }).catch(() => { /* ignore */ });
-    } catch { /* negeer niet-JSON frames */ }
-  };
+  // 5. WebSocket openen via herbruikbare helper (zie openWebSocket boven).
+  stopRequested = false;
+  reconnectAttempts = 0;
+  lastSessionArgs = { jwt, meetingId, supabaseUrl };
+  openWebSocket(lastSessionArgs, false);
 
   // 6. Tab-audio worklet (source 0x02).
   // BELANGRIJK: naast de worklet moet de source ook naar audioContext.destination
@@ -177,6 +224,9 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
       tabFrameCount,
       micFrameCount,
       wsReadyState: ws?.readyState ?? -1,
+      reconnectAttempts,
+      lastCloseCode: lastCloseInfo.code,
+      lastCloseReason: lastCloseInfo.reason,
       timestamp: Date.now(),
     };
     chrome.runtime.sendMessage({ type: 'WS_EVENT', payload }).catch(() => { /* ignore */ });
@@ -193,6 +243,14 @@ function buildMultiplexFrame(source, pcm16Buffer) {
 }
 
 async function stopAudio() {
+  stopRequested = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  lastSessionArgs = null;
+  reconnectAttempts = 0;
+
   // Stop diagnostic broadcast.
   if (diagnosticInterval) {
     clearInterval(diagnosticInterval);
