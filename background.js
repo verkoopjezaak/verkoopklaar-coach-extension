@@ -127,6 +127,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === 'SESSION_FAILED') {
+    // Offscreen heeft opgegeven na reconnect-falen. Update sessionState zodat
+    // popup 'Fout' toont met Reset-knop in plaats van 'Sessie actief'.
+    const endedTabId = sessionState.tabId;
+    sessionState = {
+      state: 'error',
+      meetingId: sessionState.meetingId,
+      tabId: endedTabId,
+      message: message.reason || 'Sessie verbroken',
+    };
+    stopKeepAlive();
+    if (endedTabId) {
+      chrome.tabs.get(endedTabId, (tab) => {
+        if (!chrome.runtime.lastError && tab) refreshTabIcon(tab.id, tab.url);
+      });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message.type === 'GET_FRESH_CONTEXT') {
+    // Offscreen vraagt bij reconnect om de meest recente webapp-gepubliceerde
+    // JWT. Webapp publiceert elke 4 min; voor een langere sessie is die
+    // nieuwer dan de JWT waarmee we zijn gestart.
+    const tabId = sessionState.tabId;
+    const ctx = tabId != null ? tabContexts.get(tabId) : null;
+    sendResponse({
+      jwt: ctx?.jwt ?? null,
+      meetingId: ctx?.meetingId ?? sessionState.meetingId,
+      supabaseUrl: ctx?.supabaseUrl ?? null,
+    });
+    return false;
+  }
+
   if (message.type === 'WS_EVENT') {
     // Relay coach-stream events van offscreen naar de meeting-tab zodat de
     // webapp ze kan tonen (transcript, interim, errors, ended).

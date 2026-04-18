@@ -78,6 +78,13 @@ function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
         type: 'WS_EVENT',
         payload: { type: 'error', code: 'reconnect_failed', message: `Reconnect mislukt na ${MAX_RECONNECT_ATTEMPTS} pogingen (code=${lastCloseInfo.code})` },
       }).catch(() => { /* ignore */ });
+      // Signaleer background dat de sessie definitief kapot is, zodat
+      // sessionState van 'active' naar 'error' gaat (anders blijft popup
+      // "Sessie actief" tonen terwijl er niks meer gebeurt).
+      chrome.runtime.sendMessage({
+        type: 'SESSION_FAILED',
+        reason: `WebSocket reconnect mislukt (code=${lastCloseInfo.code})`,
+      }).catch(() => { /* ignore */ });
       // Ook audio-pipeline volledig afsluiten zodat tabCapture vrij komt en
       // de volgende start-poging niet op "Cannot capture a tab with an active
       // stream" loopt.
@@ -90,7 +97,20 @@ function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => {
       if (stopRequested) return;
-      openWebSocket(lastSessionArgs, true);
+      // Haal voor reconnect de meest recente JWT op uit background. Als de
+      // webapp een refresh heeft gepubliceerd (elke 4 min via publishContext)
+      // is die token verser dan degene waarmee we zijn gestart. Verlopen
+      // JWT is de meest waarschijnlijke oorzaak van 1006 op langere sessies.
+      chrome.runtime.sendMessage({ type: 'GET_FRESH_CONTEXT' }, (response) => {
+        if (response?.jwt && response?.meetingId) {
+          lastSessionArgs = {
+            jwt: response.jwt,
+            meetingId: response.meetingId,
+            supabaseUrl: response.supabaseUrl || lastSessionArgs.supabaseUrl,
+          };
+        }
+        openWebSocket(lastSessionArgs, true);
+      });
     }, delay);
   };
 
