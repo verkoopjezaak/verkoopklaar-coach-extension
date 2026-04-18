@@ -7,6 +7,7 @@ const statusEl = document.getElementById('status-text');
 const statusLabel = document.getElementById('status-label-text');
 const hintEl = document.getElementById('hint');
 const startBtn = document.getElementById('start-btn');
+const micBtn = document.getElementById('mic-btn');
 const stopBtn = document.getElementById('stop-btn');
 const versionEl = document.getElementById('version');
 
@@ -19,9 +20,17 @@ function setClass(name) {
   statusEl.className = name;
 }
 
-function render({ sessionState, onMeetingTab, hasContext }) {
+function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
   startBtn.style.display = 'none';
   stopBtn.style.display = 'none';
+  micBtn.style.display = 'none';
+
+  // Toon 'Microfoon autoriseren' knop zolang permissie niet expliciet granted is.
+  // 'prompt' betekent nog niet beslist, 'denied' expliciet geweigerd - in beide
+  // gevallen moet gebruiker hem via de dedicated tab autoriseren.
+  if (micPermission !== 'granted') {
+    micBtn.style.display = 'block';
+  }
 
   if (sessionState.state === 'active') {
     statusLabel.textContent = 'Sessie actief, aan het opnemen';
@@ -75,7 +84,16 @@ async function refresh() {
     });
   }
 
-  render({ sessionState, onMeetingTab, hasContext: !!currentContext });
+  // Check mic-permission voor de extensie-origin. Permissions API geeft
+  // 'granted' / 'prompt' / 'denied' terug per origin. Als nog nooit granted,
+  // moet gebruiker via de dedicated permissie-tab.
+  let micPermission = 'prompt';
+  try {
+    const status = await navigator.permissions.query({ name: 'microphone' });
+    micPermission = status.state;
+  } catch { /* fallback: treat as not granted */ }
+
+  render({ sessionState, onMeetingTab, hasContext: !!currentContext, micPermission });
 }
 
 startBtn.addEventListener('click', async () => {
@@ -84,20 +102,10 @@ startBtn.addEventListener('click', async () => {
   statusLabel.textContent = 'Starten...';
   hintEl.textContent = '';
 
-  // Mic-permissie afdwingen vanuit user-gesture context (popup klik).
-  // Offscreen document kan silent falen op getUserMedia als de permissie niet
-  // eerder expliciet is gevraagd. Door de prompt hier te triggeren wordt hij
-  // eenmalig gegrant voor de extensie-origin en erft offscreen hem daarna.
-  try {
-    const micProbe = await navigator.mediaDevices.getUserMedia({ audio: true });
-    micProbe.getTracks().forEach((t) => t.stop());
-  } catch (err) {
-    startBtn.disabled = false;
-    statusLabel.textContent = 'Microfoon geweigerd';
-    hintEl.textContent = 'Sta microfoon toe via het Chrome-icoontje links in de adresbalk.';
-    setClass('error');
-    return;
-  }
+  // Geen mic-probe meer in popup: het popup-venster sluit zodra het Chrome
+  // toestemmings-dialoog focus krijgt, waardoor getUserMedia direct cancelt
+  // (false-negative "microfoon geweigerd"). Permissie wordt nu via de
+  // dedicated mic-permission.html tab geregeld (mic-btn hieronder).
 
   chrome.runtime.sendMessage(
     {
@@ -118,6 +126,13 @@ startBtn.addEventListener('click', async () => {
       }
     }
   );
+});
+
+micBtn.addEventListener('click', () => {
+  // Open permissie-pagina als volwaardige tab. Alleen een echte browser-tab
+  // blijft open tijdens Chrome's toestemmings-dialoog (popup of window-type
+  // sluiten bij focus-verlies, waardoor getUserMedia silent cancelt).
+  chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
 });
 
 stopBtn.addEventListener('click', () => {
