@@ -30,7 +30,7 @@ function setToolbarIcon(variant, tabId) {
 }
 
 // URL-patroon dat ook in manifest.content_scripts.matches staat.
-const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/meetings\/[^/]+\/join/;
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/[^/]+\/join|lead-meeting\/[^/]+\/advisor-join)/;
 
 function urlIsMeetingPage(url) {
   return typeof url === 'string' && MEETING_URL_RE.test(url);

@@ -17,7 +17,7 @@ const stopBtn = document.getElementById('stop-btn');
 const resetBtn = document.getElementById('reset-btn');
 const versionEl = document.getElementById('version');
 
-const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/meetings\/[^/]+\/join/;
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/[^/]+\/join|lead-meeting\/[^/]+\/advisor-join)/;
 
 let currentTab = null;
 let currentContext = null;
