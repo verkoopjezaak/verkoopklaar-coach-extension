@@ -8,10 +8,20 @@ const supabaseUrl = isPreview
   ? 'https://qmkuqyzqpokjzpnwbvzu.supabase.co'
   : 'https://zkpcahogliwakywbsews.supabase.co';
 
-// Stap 1: Stuur aankondiging naar de webpagina. Herhaal paar keer zodat een
-// hook die later mount het nog ziet. Plus expliciete COACH_EXT_PING antwoord.
-function announceReady() {
-  window.postMessage({ type: 'COACH_EXT_READY' }, '*');
+// Per page-load challenge. De pagina kiest de nonce; de extensie echoot hem in
+// ieder antwoord. Dit voorkomt dat stale of willekeurige protocolberichten een
+// actieve handshake kunnen overnemen. De token zelf is daarnaast kortlevend en
+// meetinggebonden.
+let activeNonce = null;
+
+function postToPage(type, payload = {}, nonce = activeNonce) {
+  window.postMessage({ type, ...payload, ...(nonce ? { nonce } : {}) }, window.location.origin);
+}
+
+// Stap 1: kondig aanwezigheid aan. De initiële berichten zijn alleen backwards
+// compatible detecties; de veilige flow start pas na een PING met nonce.
+function announceReady(nonce = activeNonce) {
+  postToPage('COACH_EXT_READY', {}, nonce);
 }
 announceReady();
 setTimeout(announceReady, 500);
@@ -22,14 +32,21 @@ setTimeout(announceReady, 3500);
 window.addEventListener('message', (ev) => {
   // Accepteer alleen berichten van de eigen pagina.
   if (ev.source !== window) return;
+  if (ev.origin !== window.location.origin) return;
   const data = ev.data;
   if (!data || typeof data.type !== 'string') return;
 
   // Webapp mag ping sturen om te checken of extensie aanwezig is.
   if (data.type === 'COACH_EXT_PING') {
-    announceReady();
+    if (typeof data.nonce !== 'string' || data.nonce.length < 16) return;
+    activeNonce = data.nonce;
+    announceReady(activeNonce);
     return;
   }
+
+  // Na de PING moet ieder bericht aan exact dezelfde page-loadnonce zijn
+  // gebonden. Berichten zonder of met een andere nonce worden genegeerd.
+  if (!activeNonce || data.nonce !== activeNonce) return;
 
   if (data.type === 'COACH_EXT_REQUEST_TOKEN') {
     handleStartRequest(data);
@@ -41,14 +58,15 @@ window.addEventListener('message', (ev) => {
     return;
   }
 
-  // Webapp publiceert JWT + meetingId zodat de popup een start-knop kan tonen
-  // zonder eerst de pagina te hoeven aanspreken.
+  // Webapp publiceert een kortlevende coach-token + meetingId zodat de popup
+  // kan starten. Een Supabase-sessie-JWT wordt nooit ontvangen of opgeslagen.
   if (data.type === 'COACH_EXT_SET_CONTEXT') {
     chrome.runtime.sendMessage({
       type: 'SET_CONTEXT',
-      jwt: data.jwt,
+      coachToken: data.coachToken,
       meetingId: data.meetingId,
       supabaseUrl,
+      nonce: activeNonce,
     }).catch(() => { /* ignore */ });
     return;
   }
@@ -56,40 +74,37 @@ window.addEventListener('message', (ev) => {
 
 // Stap 3: Verwerk start-verzoek van web-app.
 function handleStartRequest(data) {
-  const { jwt, meetingId } = data;
+  const { coachToken, meetingId } = data;
 
-  if (!jwt || !meetingId) {
-    window.postMessage({
-      type: 'COACH_EXT_ERROR',
-      message: 'jwt of meetingId ontbreekt in COACH_EXT_REQUEST_TOKEN',
-    }, '*');
+  if (!coachToken || !meetingId) {
+    postToPage('COACH_EXT_ERROR', {
+      message: 'coachToken of meetingId ontbreekt in COACH_EXT_REQUEST_TOKEN',
+    });
     return;
   }
 
   // Bevestig ontvangst aan de web-app.
-  window.postMessage({ type: 'COACH_EXT_ACK' }, '*');
+  postToPage('COACH_EXT_ACK');
 
   // Stuur START_SESSION naar service worker.
   chrome.runtime.sendMessage(
-    { type: 'START_SESSION', jwt, meetingId, supabaseUrl },
+    { type: 'START_SESSION', coachToken, meetingId, supabaseUrl, nonce: activeNonce },
     (response) => {
       if (chrome.runtime.lastError) {
-        window.postMessage({
-          type: 'COACH_EXT_ERROR',
+        postToPage('COACH_EXT_ERROR', {
           message: chrome.runtime.lastError.message,
-        }, '*');
+        });
         return;
       }
 
       if (response?.ok) {
         // Stap 4: Sessie succesvol gestart.
-        window.postMessage({ type: 'COACH_EXT_SESSION_STARTED' }, '*');
+        postToPage('COACH_EXT_SESSION_STARTED');
       } else {
         // Stap 5: Fout van service worker.
-        window.postMessage({
-          type: 'COACH_EXT_ERROR',
+        postToPage('COACH_EXT_ERROR', {
           message: response?.error || 'Onbekende fout bij starten van sessie',
-        }, '*');
+        });
       }
     }
   );
@@ -98,7 +113,7 @@ function handleStartRequest(data) {
 // Luister op WS_EVENT relays van de service worker en forward naar de webapp.
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'COACH_EXT_WS_EVENT' && message.payload) {
-    window.postMessage({ type: 'COACH_EXT_WS_EVENT', payload: message.payload }, '*');
+    postToPage('COACH_EXT_WS_EVENT', { payload: message.payload });
   }
 });
 

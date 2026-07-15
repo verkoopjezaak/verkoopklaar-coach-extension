@@ -23,7 +23,7 @@ let diagnosticInterval = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 let stopRequested = false;
-let lastSessionArgs = null; // { jwt, meetingId, supabaseUrl }
+let lastSessionArgs = null; // { coachToken, meetingId, supabaseUrl, nonce }
 let lastCloseInfo = { code: null, reason: null, clean: null };
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
@@ -35,17 +35,17 @@ const WORKLET_URL = chrome.runtime.getURL('worklet-processor.js');
 
 // Bouwt de WebSocket URL op basis van de Supabase-project URL.
 // Taak 7: WebSocket URL bepalen vanuit supabaseUrl.
-function buildWsUrl(supabaseUrl, meetingId, jwt) {
+function buildWsUrl(supabaseUrl, meetingId, coachToken) {
   // Converteer https:// naar wss://
   const wsBase = supabaseUrl.replace(/^https?:\/\//, 'wss://');
-  const params = new URLSearchParams({ meeting_id: meetingId, token: jwt });
+  const params = new URLSearchParams({ meeting_id: meetingId, token: coachToken });
   return `${wsBase}/functions/v1/coach-stream?${params.toString()}`;
 }
 
 // Open alleen de WebSocket (niet de audio-pipeline). Wordt gebruikt bij
 // eerste start + bij reconnects zodat streams/worklets behouden blijven.
-function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
-  const wsUrl = buildWsUrl(supabaseUrl, meetingId, jwt);
+function openWebSocket({ coachToken, meetingId, supabaseUrl, nonce }, isReconnect = false) {
+  const wsUrl = buildWsUrl(supabaseUrl, meetingId, coachToken);
   ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
@@ -97,16 +97,15 @@ function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => {
       if (stopRequested) return;
-      // Haal voor reconnect de meest recente JWT op uit background. Als de
-      // webapp een refresh heeft gepubliceerd (elke 4 min via publishContext)
-      // is die token verser dan degene waarmee we zijn gestart. Verlopen
-      // JWT is de meest waarschijnlijke oorzaak van 1006 op langere sessies.
+      // Haal voor reconnect de meest recente gescopeerde coach-token op. De
+      // webapp publiceert iedere vier minuten, vóór de vijfminuten-expiry.
       chrome.runtime.sendMessage({ type: 'GET_FRESH_CONTEXT' }, (response) => {
-        if (response?.jwt && response?.meetingId) {
+        if (response?.coachToken && response?.meetingId && response?.nonce === nonce) {
           lastSessionArgs = {
-            jwt: response.jwt,
+            coachToken: response.coachToken,
             meetingId: response.meetingId,
             supabaseUrl: response.supabaseUrl || lastSessionArgs.supabaseUrl,
+            nonce: response.nonce,
           };
         }
         openWebSocket(lastSessionArgs, true);
@@ -123,7 +122,7 @@ function openWebSocket({ jwt, meetingId, supabaseUrl }, isReconnect = false) {
   };
 }
 
-async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
+async function startAudio({ streamId, coachToken, meetingId, supabaseUrl, nonce }) {
   // 1. Tab-audio ophalen via chromeMediaSource.
   // BELANGRIJK: Chrome vereist voor tabCapture in offscreen documents dat je
   // zowel audio als video constraints opgeeft, anders komt er geen data
@@ -178,7 +177,7 @@ async function startAudio({ streamId, jwt, meetingId, supabaseUrl }) {
   // 5. WebSocket openen via herbruikbare helper (zie openWebSocket boven).
   stopRequested = false;
   reconnectAttempts = 0;
-  lastSessionArgs = { jwt, meetingId, supabaseUrl };
+  lastSessionArgs = { coachToken, meetingId, supabaseUrl, nonce };
   openWebSocket(lastSessionArgs, false);
 
   // 6. Tab-audio worklet (source 0x02).
@@ -312,8 +311,8 @@ async function stopAudio() {
 // Luister op berichten van de service worker
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'START_AUDIO') {
-    const { streamId, jwt, meetingId, supabaseUrl } = message;
-    startAudio({ streamId, jwt, meetingId, supabaseUrl })
+    const { streamId, coachToken, meetingId, supabaseUrl, nonce } = message;
+    startAudio({ streamId, coachToken, meetingId, supabaseUrl, nonce })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error('[coach-ext/offscreen] START_AUDIO fout:', err);

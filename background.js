@@ -11,7 +11,7 @@ let sessionState = {
 // Per-tab meeting-context, gevuld door de webapp via postMessage →
 // content-script → chrome.runtime.sendMessage. Popup leest hieruit om de
 // start-knop te enablen zodra een meeting-tab open staat.
-const tabContexts = new Map(); // tabId -> { jwt, meetingId, supabaseUrl, updatedAt }
+const tabContexts = new Map(); // tabId -> { coachToken, meetingId, supabaseUrl, nonce, updatedAt }
 
 let keepAliveInterval = null;
 
@@ -110,9 +110,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     if (tabId != null) {
       tabContexts.set(tabId, {
-        jwt: message.jwt,
+        coachToken: message.coachToken,
         meetingId: message.meetingId,
         supabaseUrl: message.supabaseUrl,
+        nonce: message.nonce,
         updatedAt: Date.now(),
       });
     }
@@ -148,15 +149,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'GET_FRESH_CONTEXT') {
-    // Offscreen vraagt bij reconnect om de meest recente webapp-gepubliceerde
-    // JWT. Webapp publiceert elke 4 min; voor een langere sessie is die
-    // nieuwer dan de JWT waarmee we zijn gestart.
+    // Offscreen vraagt bij reconnect om de meest recente kortlevende coach-token.
     const tabId = sessionState.tabId;
     const ctx = tabId != null ? tabContexts.get(tabId) : null;
     sendResponse({
-      jwt: ctx?.jwt ?? null,
+      coachToken: ctx?.coachToken ?? null,
       meetingId: ctx?.meetingId ?? sessionState.meetingId,
       supabaseUrl: ctx?.supabaseUrl ?? null,
+      nonce: ctx?.nonce ?? null,
     });
     return false;
   }
@@ -181,8 +181,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'START_SESSION') {
-    const { jwt, meetingId, supabaseUrl, initiatorTabId } = message;
-    handleStartSession({ jwt, meetingId, supabaseUrl, initiatorTabId })
+    const { coachToken, meetingId, supabaseUrl, nonce, initiatorTabId } = message;
+    handleStartSession({ coachToken, meetingId, supabaseUrl, nonce, initiatorTabId })
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error('[coach-ext] START_SESSION fout:', err);
@@ -225,7 +225,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
+async function handleStartSession({ coachToken, meetingId, supabaseUrl, nonce }) {
   sessionState = { state: 'idle', meetingId, tabId: null, message: null };
 
   // Teardown van eventuele oude offscreen-context. Als een vorige sessie
@@ -262,9 +262,10 @@ async function handleStartSession({ jwt, meetingId, supabaseUrl }) {
   const audioResponse = await chrome.runtime.sendMessage({
     type: 'START_AUDIO',
     streamId,
-    jwt,
+    coachToken,
     meetingId,
     supabaseUrl,
+    nonce,
   });
 
   if (!audioResponse?.ok) {

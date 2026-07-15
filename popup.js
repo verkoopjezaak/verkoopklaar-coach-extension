@@ -40,7 +40,7 @@ function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
   setCheck(checkTab, onMeetingTab ? 'ok' : 'missing');
   textTab.textContent = onMeetingTab ? 'Op meeting-pagina' : 'Open een meeting-pagina';
 
-  // Checkpoint 2: heeft de webapp al context (jwt + meetingId) gepushed?
+  // Checkpoint 2: heeft de webapp een gescopeerde coach-token + meetingId gepusht?
   if (!onMeetingTab) {
     setCheck(checkContext, 'missing');
     textContext.textContent = 'Meeting-context (wacht op pagina)';
@@ -147,9 +147,10 @@ startBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage(
     {
       type: 'START_SESSION',
-      jwt: currentContext.jwt,
+      coachToken: currentContext.coachToken,
       meetingId: currentContext.meetingId,
       supabaseUrl: currentContext.supabaseUrl,
+      nonce: currentContext.nonce,
       initiatorTabId: currentTab.id,
     },
     (response) => {
