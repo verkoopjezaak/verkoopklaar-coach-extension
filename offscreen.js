@@ -77,6 +77,8 @@ function openWebSocket({ coachToken, meetingId, supabaseUrl, nonce }, isReconnec
     reconnectAttempts = 0;
     lastCloseInfo = { code: null, reason: null, clean: null };
     startHeartbeat();
+    // Bij een reconnect kan de mic-track tijdens de drop zijn gestorven; her-acquire.
+    if (isReconnect) void ensureMicHealthy();
   };
 
   ws.onerror = (err) => {
@@ -228,32 +230,15 @@ async function startAudio({ streamId, coachToken, meetingId, supabaseUrl, nonce 
     const tabSource = audioContext.createMediaStreamSource(tabStream);
     tabSource.connect(tabWorkletNode);
     tabSource.connect(audioContext.destination); // houd afspelen actief
+    attachTrackEndedHandler(tabAudioTracks[0], 'tab');
   } else {
     console.warn('[coach-ext/offscreen] tabStream heeft GEEN audio tracks');
   }
 
-  // 7. Mic-audio worklet (source 0x01), indien beschikbaar
+  // 7. Mic-audio worklet (source 0x01), indien beschikbaar. wireMicWorklet
+  //    hangt ook de track-'ended'-listener voor mic-verlies-detectie.
   if (micStream) {
-    const micAudioTracks = micStream.getAudioTracks();
-    if (micAudioTracks.length > 0) {
-      micWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
-        processorOptions: { sourceLabel: 0x01 },
-      });
-      micWorkletNode.port.onmessage = (ev) => {
-        if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
-          const frame = buildMultiplexFrame(ev.data.source, ev.data.buffer);
-          ws.send(frame);
-          micFrameCount++;
-          if (micFrameCount === 10 || micFrameCount === 100) {
-            console.log(`[coach-ext/offscreen] mic frames verzonden: ${micFrameCount}`);
-          }
-        }
-      };
-      const micSource = audioContext.createMediaStreamSource(micStream);
-      micSource.connect(micWorkletNode);
-      // Mic NIET naar destination connecten - anders krijgt Maarten zijn eigen
-      // stem terug via de luidspreker (echo).
-    }
+    wireMicWorklet();
   }
 
   console.log('[coach-ext/offscreen] Audio-capture gestart');
@@ -288,6 +273,73 @@ function buildMultiplexFrame(source, pcm16Buffer) {
   frame[0] = source; // 0x01 = mic, 0x02 = tab
   frame.set(new Uint8Array(pcm16Buffer), 1);
   return frame.buffer;
+}
+
+// Relay een event naar de service worker -> content-script -> webapp.
+function broadcast(payload) {
+  chrome.runtime.sendMessage({ type: 'WS_EVENT', payload }).catch(() => { /* ignore */ });
+}
+
+// (1.0.18) Verbind de mic-stream met de worklet. Herbruikbaar bij eerste start
+// én bij her-acquire na mic-verlies. Hangt ook de track-'ended'-listener.
+function wireMicWorklet() {
+  if (!micStream || !audioContext) return;
+  const micAudioTracks = micStream.getAudioTracks();
+  if (micAudioTracks.length === 0) return;
+  try { micWorkletNode?.disconnect(); } catch { /* ignore */ }
+  micWorkletNode = new AudioWorkletNode(audioContext, 'coach-pcm-worklet-labeled', {
+    processorOptions: { sourceLabel: 0x01 },
+  });
+  micWorkletNode.port.onmessage = (ev) => {
+    if (ev.data && ev.data.buffer instanceof ArrayBuffer && ws?.readyState === WebSocket.OPEN) {
+      ws.send(buildMultiplexFrame(ev.data.source, ev.data.buffer));
+      micFrameCount++;
+    }
+  };
+  const micSource = audioContext.createMediaStreamSource(micStream);
+  micSource.connect(micWorkletNode);
+  // Mic NIET naar destination connecten - anders echo van eigen stem.
+  attachTrackEndedHandler(micAudioTracks[0], 'mic');
+}
+
+// Hang een 'ended'-listener op een audio-track. Mic-verlies -> expliciet event
+// naar de pagina (voedt de banner) + re-acquire-poging. Tab-verlies -> error.
+function attachTrackEndedHandler(track, kind) {
+  if (!track) return;
+  track.addEventListener('ended', () => {
+    if (stopRequested) return; // teardown, geen valse melding
+    console.warn(`[coach-ext/offscreen] ${kind}-track ended`);
+    if (kind === 'mic') {
+      broadcast({ type: 'ext_mic_lost' });
+      void reacquireMic();
+    } else {
+      broadcast({ type: 'error', code: 'tab_track_ended', message: 'Klant-audio (tab) is gestopt. Herstart de coach.' });
+    }
+  }, { once: true });
+}
+
+// Verwerf de microfoon opnieuw (bijv. na apparaat-wissel of intrekking) en
+// herbouw de worklet. Best-effort; bij falen blijft de mic-lost-melding staan.
+async function reacquireMic() {
+  if (stopRequested || !audioContext) return;
+  try {
+    micStream?.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    wireMicWorklet();
+    broadcast({ type: 'ext_mic_restored' });
+    console.log('[coach-ext/offscreen] microfoon opnieuw verworven');
+  } catch (err) {
+    console.warn('[coach-ext/offscreen] mic re-acquire faalde:', err?.message);
+  }
+}
+
+// Controleer bij een WS-reconnect of de mic-track nog leeft; zo niet, re-acquire.
+async function ensureMicHealthy() {
+  if (stopRequested || !audioContext) return;
+  const track = micStream?.getAudioTracks?.()[0];
+  if (!track || track.readyState === 'ended') {
+    await reacquireMic();
+  }
 }
 
 async function stopAudio() {
