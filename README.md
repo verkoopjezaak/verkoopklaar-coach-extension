@@ -85,12 +85,12 @@ Webpagina (meeting-join)
 
 | Van | Naar | Type | Inhoud |
 |-----|------|------|--------|
-| content-script | web-app | `COACH_EXT_READY` | aanwezigheid extensie |
-| web-app | content-script | `COACH_EXT_REQUEST_TOKEN` | `{ jwt, meetingId }` |
-| content-script | web-app | `COACH_EXT_ACK` | ontvangstbevestiging |
-| service worker | web-app (via content-script) | `COACH_EXT_SESSION_STARTED` | sessie actief |
-| service worker | web-app (via content-script) | `COACH_EXT_ERROR` | foutbericht |
-| web-app | content-script | `COACH_EXT_STOP` | stop sessie |
+| content-script | web-app | `COACH_EXT_READY` | aanwezigheid extensie + pagina-nonce |
+| web-app | content-script | `COACH_EXT_REQUEST_TOKEN` | `{ coachToken, meetingId, nonce }`; kortlevend en alleen voor coach-stream |
+| content-script | web-app | `COACH_EXT_ACK` | ontvangstbevestiging + nonce |
+| service worker | web-app (via content-script) | `COACH_EXT_SESSION_STARTED` | sessie actief + nonce |
+| service worker | web-app (via content-script) | `COACH_EXT_ERROR` | foutbericht + nonce |
+| web-app | content-script | `COACH_EXT_STOP` | stop sessie + nonce |
 
 ---
 

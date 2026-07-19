@@ -28,6 +28,29 @@ let lastCloseInfo = { code: null, reason: null, clean: null };
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
 
+// App-level heartbeat (1.0.17). Zonder verkeer sluiten sommige proxies een idle
+// WebSocket (vermoedelijke 76s-kill tijdens stiltes). Stuur elke 20s een ping
+// zodat de upstream-verbinding warm blijft, ook als er even geen audio-frames
+// gaan. De server (coach-stream) antwoordt met pong en pingt zelf ook terug.
+let heartbeatTimer = null;
+const HEARTBEAT_INTERVAL_MS = 20000;
+
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch { /* ignore */ }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
 // Lees de worklet-code als string voor Blob URL (omzeilt CSP in offscreen context).
 // Alternatief: verwijs naar worklet-processor.js via relatief pad.
 // In offscreen document werkt chrome.runtime.getURL() voor extensie-resources.
@@ -53,6 +76,7 @@ function openWebSocket({ coachToken, meetingId, supabaseUrl, nonce }, isReconnec
     console.log(`[coach-ext/offscreen] WebSocket verbonden${isReconnect ? ' (reconnect)' : ''}`);
     reconnectAttempts = 0;
     lastCloseInfo = { code: null, reason: null, clean: null };
+    startHeartbeat();
   };
 
   ws.onerror = (err) => {
@@ -60,6 +84,7 @@ function openWebSocket({ coachToken, meetingId, supabaseUrl, nonce }, isReconnec
   };
 
   ws.onclose = (ev) => {
+    stopHeartbeat();
     lastCloseInfo = { code: ev?.code ?? null, reason: ev?.reason ?? null, clean: ev?.wasClean ?? null };
     console.log(`[coach-ext/offscreen] WebSocket gesloten: code=${lastCloseInfo.code} reason=${lastCloseInfo.reason} clean=${lastCloseInfo.clean}`);
     chrome.runtime.sendMessage({
@@ -267,6 +292,7 @@ function buildMultiplexFrame(source, pcm16Buffer) {
 
 async function stopAudio() {
   stopRequested = true;
+  stopHeartbeat();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
