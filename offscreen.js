@@ -409,5 +409,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // asynchrone response
   }
 
+  if (message.type === 'CONFERENCE_END_AUDIO') {
+    // Meld het videoconferentie-einde over de coach-WS VOORDAT we de socket
+    // sluiten, zodat de server de streams + sessie netjes afsluit. Daarna de
+    // normale audio-teardown (sluit ook de WS).
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'videoConferenceLeft' }));
+      }
+    } catch { /* ignore */ }
+    stopAudio()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.error('[coach-ext/offscreen] CONFERENCE_END_AUDIO fout:', err);
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true; // asynchrone response
+  }
+
   return false;
 });

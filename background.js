@@ -246,6 +246,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'CONFERENCE_END') {
+    handleConferenceEnd()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.error('[coach-ext] CONFERENCE_END fout:', err);
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true;
+  }
+
   if (message.type === 'RESET_SESSION') {
     handleResetSession()
       .then(() => sendResponse({ ok: true }))
@@ -313,6 +323,28 @@ async function handleStopSession() {
   }
 
   await closeOffscreenDocument();
+  const cur = await getSessionState();
+  const endedTabId = cur.tabId;
+  await setSessionState({ ...DEFAULT_SESSION_STATE });
+  if (endedTabId) {
+    chrome.tabs.get(endedTabId, (tab) => {
+      if (!chrome.runtime.lastError && tab) void refreshTabIcon(tab.id, tab.url);
+    });
+  }
+}
+
+async function handleConferenceEnd() {
+  // Videoconferentie beëindigd: laat offscreen eerst het videoConferenceLeft-
+  // signaal over de coach-WS sturen (server sluit dan streams + sessie), en ruim
+  // daarna dezelfde staat op als bij een gewone stop. CONFERENCE_END_AUDIO stopt
+  // de audio zelf, dus geen aparte STOP_AUDIO nodig.
+  stopKeepAlive();
+  try {
+    await chrome.runtime.sendMessage({ type: 'CONFERENCE_END_AUDIO' });
+  } catch {
+    // Offscreen document al gesloten of nooit gestart — geen probleem.
+  }
+  await closeOffscreenDocument().catch(() => { /* ignore */ });
   const cur = await getSessionState();
   const endedTabId = cur.tabId;
   await setSessionState({ ...DEFAULT_SESSION_STATE });

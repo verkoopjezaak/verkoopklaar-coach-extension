@@ -58,6 +58,15 @@ window.addEventListener('message', (ev) => {
     return;
   }
 
+  // Videoconferentie beëindigd (Jitsi videoConferenceLeft/readyToClose, door de
+  // web-app doorgestuurd). Forward naar de service worker zodat die het einde
+  // over de coach-WS meldt en de sessie netjes afsluit (voorkomt dat post-call-
+  // audio nog wordt getranscribeerd).
+  if (data.type === 'COACH_EXT_CONFERENCE_END') {
+    chrome.runtime.sendMessage({ type: 'CONFERENCE_END' }).catch(() => { /* ignore */ });
+    return;
+  }
+
   // Webapp publiceert een kortlevende coach-token + meetingId zodat de popup
   // kan starten. Een Supabase-sessie-JWT wordt nooit ontvangen of opgeslagen.
   if (data.type === 'COACH_EXT_SET_CONTEXT') {
