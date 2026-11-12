@@ -35,13 +35,19 @@ class PCMLabeledWorkletProcessor extends AudioWorkletProcessor {
     while (this.buffer.length >= this.chunkSamples) {
       const chunk = this.buffer.splice(0, this.chunkSamples);
       const pcm16 = new Int16Array(chunk.length);
+      let sumSq = 0;
       for (let i = 0; i < chunk.length; i++) {
         const s = Math.max(-1, Math.min(1, chunk[i]));
+        sumSq += s * s;
         pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
+      // RMS (0..1) per 100 ms-chunk: voedt de niveau-diagnostiek in
+      // offscreen.js (1.0.24). Bewijs voor "adviseur-audio valt weg": zien of
+      // de mic uberhaupt signaal levert terwijl de tab speelt.
+      const rms = Math.sqrt(sumSq / chunk.length);
       // Stuur source-label mee zodat offscreen.js het frame kan prefixen
       this.port.postMessage(
-        { source: this.sourceLabel, buffer: pcm16.buffer },
+        { source: this.sourceLabel, buffer: pcm16.buffer, rms },
         [pcm16.buffer]
       );
     }

@@ -15,9 +15,10 @@ const startBtn = document.getElementById('start-btn');
 const micBtn = document.getElementById('mic-btn');
 const stopBtn = document.getElementById('stop-btn');
 const resetBtn = document.getElementById('reset-btn');
+const resetNote = document.getElementById('reset-note');
 const versionEl = document.getElementById('version');
 
-const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/[^/]+\/join|lead-meeting\/[^/]+\/advisor-join)/;
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/(?!new(?:[/?#]|$))[^/?#]+|lead-meeting\/[^/]+\/advisor-join)/;
 
 let currentTab = null;
 let currentContext = null;
@@ -35,6 +36,7 @@ function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
   stopBtn.style.display = 'none';
   micBtn.style.display = 'none';
   resetBtn.style.display = 'none';
+  resetNote.style.display = 'none';
 
   // Checkpoint 1: zit gebruiker op een meeting-join pagina?
   setCheck(checkTab, onMeetingTab ? 'ok' : 'missing');
@@ -71,6 +73,7 @@ function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
     hintEl.textContent = '';
     stopBtn.style.display = 'block';
     resetBtn.style.display = 'block';
+    resetNote.style.display = 'block';
     return;
   }
 
@@ -80,6 +83,7 @@ function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
     currentStateEl.textContent = '● Fout: ' + (sessionState.message || 'onbekend');
     hintEl.textContent = 'Klik Reset om de extensie-staat op te ruimen en opnieuw te proberen.';
     resetBtn.style.display = 'block';
+    resetNote.style.display = 'block';
     return;
   }
 
@@ -109,6 +113,18 @@ function render({ sessionState, onMeetingTab, hasContext, micPermission }) {
   hintEl.textContent = 'Alles klaar. Klik "Coach starten".';
 }
 
+// Max één REQUEST_CONTEXT per 2 s (de refresh-tik), zodat we de pagina niet
+// bestoken zolang de context nog onderweg is.
+let lastContextRequestAt = 0;
+function requestContext(tabId) {
+  const now = Date.now();
+  if (now - lastContextRequestAt < 1900) return;
+  lastContextRequestAt = now;
+  chrome.runtime.sendMessage({ type: 'REQUEST_CONTEXT', tabId }, () => {
+    if (chrome.runtime.lastError) { /* tab of content-script weg: volgende tik opnieuw */ }
+  });
+}
+
 async function refresh() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab;
@@ -127,6 +143,13 @@ async function refresh() {
         resolve(response?.context ?? null);
       });
     });
+    // Geen context terwijl we wél op een meetingpagina staan: actief opvragen
+    // (request/response) in plaats van alleen wachten. Background zorgt dat
+    // het content-script aanwezig is (SPA-navigatie) en vraagt de pagina om
+    // een verse publish; de volgende refresh-tik pikt de context dan op.
+    if (!currentContext && onMeetingTab && sessionState.state !== 'active') {
+      requestContext(tab.id);
+    }
   }
 
   let micPermission = 'prompt';
@@ -166,6 +189,35 @@ startBtn.addEventListener('click', () => {
   );
 });
 
+// Handmatige mic-override (1.0.26): label in chrome.storage.local; leeg =
+// automatisch (volgt het Jitsi-mic-label). Offscreen krijgt MIC_OVERRIDE_CHANGED
+// en her-acquireert direct als er een sessie loopt.
+const micSelect = document.getElementById('mic-select');
+async function fillMicSelect() {
+  if (!micSelect) return;
+  let inputs = [];
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    inputs = all.filter((d) => d.kind === 'audioinput' && d.label);
+  } catch { /* geen permissie: alleen "Automatisch" */ }
+  const { micOverrideLabel } = await chrome.storage.local.get('micOverrideLabel');
+  while (micSelect.options.length > 1) micSelect.remove(1);
+  for (const d of inputs) {
+    const opt = document.createElement('option');
+    opt.value = d.label;
+    opt.textContent = d.label;
+    micSelect.appendChild(opt);
+  }
+  micSelect.value = typeof micOverrideLabel === 'string' ? micOverrideLabel : '';
+  if (micSelect.value !== (micOverrideLabel || '')) micSelect.value = '';
+}
+micSelect?.addEventListener('change', async () => {
+  const label = micSelect.value || null;
+  await chrome.storage.local.set({ micOverrideLabel: label ?? '' });
+  chrome.runtime.sendMessage({ type: 'MIC_OVERRIDE_CHANGED', label }).catch(() => { /* geen offscreen */ });
+});
+void fillMicSelect();
+
 micBtn.addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') });
 });
@@ -186,6 +238,19 @@ resetBtn.addEventListener('click', () => {
 
 const manifest = chrome.runtime.getManifest();
 versionEl.textContent = `v${manifest.version}`;
+
+// Het openen van dit popup IS een extensie-invocatie (Chrome verleent daarmee
+// activeTab voor de huidige tab). Was er een Start-poging vanaf de webpagina
+// die daarop wachtte (COACH_EXT_ERROR: 'ACTIVE_TAB_REQUIRED...'), hervat die nu
+// automatisch: de gebruiker hoeft alleen dit icoon te openen, niet ook nog
+// zelf een knop in te drukken.
+(async function resumePendingStart() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  chrome.runtime.sendMessage({ type: 'RESUME_PENDING_START', tabId: tab.id }, () => {
+    if (chrome.runtime.lastError) { /* geen pending start: niets te doen */ }
+  });
+})();
 
 refresh();
 // Repoll every 2s zodat context-updates of state-changes vanzelf doorkomen

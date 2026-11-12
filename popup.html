@@ -140,10 +140,15 @@
     <div id="current-state">Niet actief</div>
     <div id="hint"></div>
   </div>
+  <label for="mic-select" style="display:block;font-size:12px;margin:8px 0 4px;">Coach-microfoon</label>
+  <select id="mic-select" style="width:100%;font-size:12px;padding:6px;margin-bottom:8px;">
+    <option value="">Automatisch (volgt Jitsi)</option>
+  </select>
   <button id="mic-btn" class="btn">Microfoon autoriseren</button>
   <button id="start-btn" class="btn">Coach starten</button>
   <button id="stop-btn" class="btn">Coach stoppen</button>
   <button id="reset-btn" class="btn">Reset (opnieuw beginnen)</button>
+  <div id="reset-note" style="font-size:11px;color:#6b7280;margin-top:4px;">Reset stopt alleen de coach, het gesprek loopt door.</div>
   <div id="version"></div>
   <script src="popup.js"></script>
 </body>

@@ -1,6 +1,23 @@
 // content-script.js
 // Wordt geïnjecteerd op de Verkoopklaar meeting-join pagina's.
 // Taak 8: pagina-detectie en handshake tussen web-app en service worker.
+//
+// Injectie gebeurt op twee manieren:
+//   1. via manifest content_scripts bij een volledige paginalaad op een
+//      meeting-URL;
+//   2. programmatisch door background.js (chrome.scripting) wanneer de SPA
+//      zonder herlaad naar een meeting-URL navigeert (dashboard -> advisor-join).
+// Beide paden kunnen elkaar kruisen; de guard hieronder zorgt dat het script
+// per document maar één keer luistert. Bij een tweede injectie kondigen we ons
+// alleen opnieuw aan, zodat de web-app (die dan opnieuw pingt) de handshake
+// alsnog rondmaakt.
+
+if (globalThis.__vkCoachContentScriptLoaded) {
+  // Al actief in dit document: alleen opnieuw aankondigen (zonder nonce, de
+  // pagina antwoordt met een nieuwe PING) en verder niets dubbel registreren.
+  globalThis.__vkCoachAnnounceReady?.();
+} else {
+globalThis.__vkCoachContentScriptLoaded = true;
 
 // Taak 7: bepaal de Supabase-project URL op basis van de huidige hostname.
 const isPreview = location.hostname.includes('preview');
@@ -23,6 +40,7 @@ function postToPage(type, payload = {}, nonce = activeNonce) {
 function announceReady(nonce = activeNonce) {
   postToPage('COACH_EXT_READY', {}, nonce);
 }
+globalThis.__vkCoachAnnounceReady = () => announceReady(null);
 announceReady();
 setTimeout(announceReady, 500);
 setTimeout(announceReady, 1500);
@@ -62,6 +80,25 @@ window.addEventListener('message', (ev) => {
   // web-app doorgestuurd). Forward naar de service worker zodat die het einde
   // over de coach-WS meldt en de sessie netjes afsluit (voorkomt dat post-call-
   // audio nog wordt getranscribeerd).
+  // Jitsi-mute-status van de webapp (audioMuteStatusChanged / isAudioMuted).
+  // Het offscreen-document zet de coach-mic-tracks op enabled=false bij mute.
+  if (data.type === 'COACH_EXT_MIC_MUTE') {
+    chrome.runtime.sendMessage({ type: 'SET_MIC_MUTE', muted: !!data.muted }).catch(() => { /* ignore */ });
+    return;
+  }
+
+  // Jitsi-mic-device van de webapp (1.0.26): label + (origin-gebonden) deviceId.
+  // Background bewaart het; offscreen ontvangt hetzelfde bericht live en
+  // her-acquireert de mic als het label verandert.
+  if (data.type === 'COACH_EXT_MIC_DEVICE') {
+    chrome.runtime.sendMessage({
+      type: 'SET_MIC_DEVICE',
+      label: typeof data.label === 'string' ? data.label : null,
+      deviceId: typeof data.deviceId === 'string' ? data.deviceId : null,
+    }).catch(() => { /* ignore */ });
+    return;
+  }
+
   if (data.type === 'COACH_EXT_CONFERENCE_END') {
     chrome.runtime.sendMessage({ type: 'CONFERENCE_END' }).catch(() => { /* ignore */ });
     return;
@@ -119,10 +156,33 @@ function handleStartRequest(data) {
   );
 }
 
-// Luister op WS_EVENT relays van de service worker en forward naar de webapp.
-chrome.runtime.onMessage.addListener((message) => {
+// Luister op relays van de service worker en forward naar de webapp.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'COACH_EXT_WS_EVENT' && message.payload) {
     postToPage('COACH_EXT_WS_EVENT', { payload: message.payload });
+    return;
+  }
+  // Een eerdere Start-poging (COACH_EXT_REQUEST_TOKEN) liep vast op de
+  // activeTab-eis van tabCapture; de popup is inmiddels geopend (= invocatie)
+  // en de service worker heeft de sessie alsnog gestart. Deze melding loopt
+  // buiten de normale ACK-flow van handleStartRequest om.
+  if (message?.type === 'COACH_EXT_RESUMED') {
+    postToPage('COACH_EXT_RESUMED');
+    return;
+  }
+  // De popup vraagt (via background) om de meeting-context. Is de handshake
+  // al rond (activeNonce), dan vraagt de pagina om een verse context-publish.
+  // Zo niet, dan kondigen we ons opnieuw aan zodat de pagina opnieuw pingt en
+  // de handshake alsnog start. Antwoord meldt welk pad we namen.
+  if (message?.type === 'REQUEST_CONTEXT') {
+    if (activeNonce) {
+      postToPage('COACH_EXT_REQUEST_CONTEXT');
+      sendResponse({ ok: true, handshake: 'active' });
+    } else {
+      announceReady(null);
+      sendResponse({ ok: true, handshake: 'pending' });
+    }
+    return;
   }
 });
 
@@ -134,3 +194,4 @@ function handleStopRequest() {
     }
   });
 }
+} // einde injectie-guard

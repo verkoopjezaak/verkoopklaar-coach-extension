@@ -45,6 +45,32 @@ async function deleteTabContext(tabId) {
   }
 }
 
+// ---- Pending start na ontbrekende activeTab-invocatie ----------------------
+// Chrome staat chrome.tabCapture.getMediaStreamId({targetTabId}) alleen toe op
+// een tab waarvoor de extensie zelf is "aangeroepen" (icoon-klik, sneltoets of
+// contextmenu) - een klik op een knop OP DE WEBPAGINA telt daar niet voor mee,
+// ook al heeft de extensie host_permissions voor die pagina. Start de coach
+// dus rechtstreeks vanaf de web-app (het normale pad, via content-script.js)
+// zonder dat het extensie-icoon ooit is aangeklikt, dan weigert Chrome met
+// "Extension has not been invoked for the current page (see activeTab
+// permission)." Bewaar die mislukte poging hier zodat het enkel OPENEN van de
+// popup (dat wél als invocatie telt en meteen activeTab verleent) 'm alsnog
+// automatisch hervat, zonder dat de gebruiker nogmaals iets hoeft te starten.
+const ACTIVE_TAB_REQUIRED_RE = /activeTab|has not been invoked/i;
+async function getPendingStart(tabId) {
+  if (tabId == null) return null;
+  const { pendingStarts } = await chrome.storage.session.get('pendingStarts');
+  return (pendingStarts ?? {})[tabId] ?? null;
+}
+async function setPendingStart(tabId, payload) {
+  if (tabId == null) return;
+  const { pendingStarts } = await chrome.storage.session.get('pendingStarts');
+  const map = pendingStarts ?? {};
+  if (payload) map[tabId] = payload;
+  else delete map[tabId];
+  await chrome.storage.session.set({ pendingStarts: map });
+}
+
 // ---- Toolbar-icoon ---------------------------------------------------------
 // Drie states: default (grijs), ready (groen), active (rood).
 function setToolbarIcon(variant, tabId) {
@@ -58,7 +84,7 @@ function setToolbarIcon(variant, tabId) {
 }
 
 // URL-patroon dat ook in manifest.content_scripts.matches staat.
-const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/[^/]+\/join|lead-meeting\/[^/]+\/advisor-join)/;
+const MEETING_URL_RE = /^https:\/\/(preview|app)\.verkoopjezaak\.nl\/client\/[^/]+\/(meetings\/(?!new(?:[/?#]|$))[^/?#]+|lead-meeting\/[^/]+\/advisor-join)/;
 
 function urlIsMeetingPage(url) {
   return typeof url === 'string' && MEETING_URL_RE.test(url);
@@ -79,9 +105,39 @@ async function refreshTabIcon(tabId, url) {
 }
 
 // Houd alle open tabs bij voor icoon-updates.
+// Content-script injecteren op een tab die (na SPA-navigatie) op een meeting-
+// pagina staat. Manifest-content_scripts draaien alleen bij een volledige
+// paginalaad; navigeert de web-app van dashboard naar advisor-join zonder
+// herlaad, dan zou er anders nooit een content-script komen en blijft de popup
+// op "Wacht op meeting-context..." hangen. Het script heeft een eigen
+// injectie-guard, dus dubbel injecteren is onschadelijk.
+async function ensureContentScript(tabId, url) {
+  if (!urlIsMeetingPage(url)) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content-script.js'],
+    });
+    return true;
+  } catch (err) {
+    console.warn('[coach-ext/bg] content-script injecteren mislukt:', err?.message ?? err);
+    return false;
+  }
+}
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' || changeInfo.url) {
     void refreshTabIcon(tabId, tab.url);
+  }
+  // changeInfo.url komt ook bij history.pushState (SPA-routewissel).
+  if (changeInfo.url) {
+    if (urlIsMeetingPage(changeInfo.url)) {
+      void ensureContentScript(tabId, changeInfo.url);
+    } else {
+      // Weg van de meetingpagina: oude context weggooien, anders toont de
+      // popup straks een verouderde meeting als "ontvangen".
+      void deleteTabContext(tabId);
+    }
   }
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
@@ -130,14 +186,42 @@ async function closeOffscreenDocument() {
 // Ruim context op wanneer een tab sluit.
 chrome.tabs.onRemoved.addListener((tabId) => {
   void deleteTabContext(tabId);
+  void setPendingStart(tabId, null);
 });
 
 // ---- Message-router --------------------------------------------------------
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Mic-device-voorkeur (1.0.26). Jitsi-label komt via content-script; de
+  // handmatige override komt uit de popup (chrome.storage.local). Offscreen
+  // kan chrome.storage niet lezen en vraagt het hier op (GET_MIC_DEVICE).
+  if (message.type === 'SET_MIC_DEVICE') {
+    (async () => {
+      await chrome.storage.session.set({
+        micDevice: { label: message.label ?? null, deviceId: message.deviceId ?? null },
+      });
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+  if (message.type === 'GET_MIC_DEVICE') {
+    (async () => {
+      const { micDevice } = await chrome.storage.session.get('micDevice');
+      const { micOverrideLabel } = await chrome.storage.local.get('micOverrideLabel');
+      sendResponse({
+        jitsiLabel: micDevice?.label ?? null,
+        overrideLabel: typeof micOverrideLabel === 'string' && micOverrideLabel ? micOverrideLabel : null,
+      });
+    })();
+    return true;
+  }
+
   if (message.type === 'SET_CONTEXT') {
     (async () => {
       const tabId = sender.tab?.id;
       if (tabId != null) {
+        // Oude foutstand (bv. reconnect_failed) mag een nieuwe meeting niet blokkeren.
+        const cur = await getSessionState();
+        if (cur.state === 'error') await setSessionState({ ...DEFAULT_SESSION_STATE });
         await setTabContext(tabId, {
           coachToken: message.coachToken,
           meetingId: message.meetingId,
@@ -149,6 +233,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
     })();
     return true; // async response
+  }
+
+  // Popup vraagt om (verse) meeting-context voor een tab: zorg dat het
+  // content-script er is en laat dat de pagina om een context-publish vragen.
+  if (message.type === 'REQUEST_CONTEXT') {
+    (async () => {
+      const tabId = message.tabId;
+      if (tabId == null) { sendResponse({ ok: false, error: 'tabId ontbreekt' }); return; }
+      let url = null;
+      try { url = (await chrome.tabs.get(tabId))?.url ?? null; } catch { /* tab weg */ }
+      if (!urlIsMeetingPage(url)) { sendResponse({ ok: false, error: 'geen meetingpagina' }); return; }
+      const injected = await ensureContentScript(tabId, url);
+      let reply = null;
+      try {
+        reply = await chrome.tabs.sendMessage(tabId, { type: 'REQUEST_CONTEXT' });
+      } catch (err) {
+        sendResponse({ ok: false, injected, error: err?.message ?? String(err) });
+        return;
+      }
+      sendResponse({ ok: true, injected, handshake: reply?.handshake ?? null });
+    })();
+    return true;
   }
 
   if (message.type === 'GET_CONTEXT') {
@@ -256,6 +362,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Popup is zojuist geopend (= een echte extensie-invocatie, verleent
+  // activeTab voor de huidige tab). Was er een eerdere Start-poging vanaf de
+  // webpagina die daarop wachtte, hervat die nu vanzelf.
+  if (message.type === 'RESUME_PENDING_START') {
+    (async () => {
+      const tabId = message.tabId;
+      const pending = await getPendingStart(tabId);
+      if (!pending) { sendResponse({ ok: true, resumed: false }); return; }
+      try {
+        await handleStartSession({ ...pending, tabIdHint: tabId });
+        await setPendingStart(tabId, null);
+        // Buiten de normale ACK-flow van content-script.js om (deze hervatting
+        // liep niet via COACH_EXT_REQUEST_TOKEN): meld de pagina rechtstreeks
+        // dat de sessie alsnog gestart is.
+        chrome.tabs.sendMessage(tabId, { type: 'COACH_EXT_RESUMED' }).catch(() => { /* content-script kan weg zijn */ });
+        sendResponse({ ok: true, resumed: true });
+      } catch (err) {
+        console.error('[coach-ext] RESUME_PENDING_START fout:', err);
+        sendResponse({ ok: false, resumed: true, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'RESET_SESSION') {
     handleResetSession()
       .then(() => sendResponse({ ok: true }))
@@ -269,7 +399,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-async function handleStartSession({ coachToken, meetingId, supabaseUrl, nonce }) {
+async function handleStartSession({ coachToken, meetingId, supabaseUrl, nonce, tabIdHint }) {
   await setSessionState({ state: 'idle', meetingId, tabId: null, message: null });
 
   // Teardown van eventuele oude offscreen-context zodat een nieuwe tabCapture
@@ -280,17 +410,37 @@ async function handleStartSession({ coachToken, meetingId, supabaseUrl, nonce })
   } catch { /* offscreen bestond niet, prima */ }
   await closeOffscreenDocument().catch(() => { /* ignore */ });
 
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  let activeTab = null;
+  if (tabIdHint != null) {
+    try { activeTab = await chrome.tabs.get(tabIdHint); } catch { activeTab = null; }
+  }
+  if (!activeTab) {
+    [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  }
   if (!activeTab?.id) {
     throw new Error('Geen actieve tab gevonden');
   }
 
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: activeTab.id,
-  });
+  let streamId;
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: activeTab.id,
+    });
+  } catch (err) {
+    const msg = err?.message || String(err);
+    if (ACTIVE_TAB_REQUIRED_RE.test(msg)) {
+      await setPendingStart(activeTab.id, { coachToken, meetingId, supabaseUrl, nonce });
+      throw new Error(
+        'ACTIVE_TAB_REQUIRED: Klik eenmalig op het Verkoopklaar Coach-icoon in de werkbalk. '
+        + 'De coach start dan automatisch, deze knop hoeft daarna niet nogmaals.',
+      );
+    }
+    throw err;
+  }
   if (!streamId) {
     throw new Error('tabCapture.getMediaStreamId leverde geen stream-ID op');
   }
+  await setPendingStart(activeTab.id, null);
 
   await ensureOffscreenDocument();
 
@@ -326,6 +476,7 @@ async function handleStopSession() {
   const cur = await getSessionState();
   const endedTabId = cur.tabId;
   await setSessionState({ ...DEFAULT_SESSION_STATE });
+  await setPendingStart(endedTabId, null);
   if (endedTabId) {
     chrome.tabs.get(endedTabId, (tab) => {
       if (!chrome.runtime.lastError && tab) void refreshTabIcon(tab.id, tab.url);
@@ -348,6 +499,10 @@ async function handleConferenceEnd() {
   const cur = await getSessionState();
   const endedTabId = cur.tabId;
   await setSessionState({ ...DEFAULT_SESSION_STATE });
+  // Ook een eventuele bewaarde (nog niet hervatte) activeTab-poging voor deze
+  // tab opruimen: het gesprek is voorbij, een latere popup-open mag 'm niet
+  // meer alsnog starten met een inmiddels verlopen coachToken.
+  await setPendingStart(endedTabId, null);
   if (endedTabId) {
     chrome.tabs.get(endedTabId, (tab) => {
       if (!chrome.runtime.lastError && tab) void refreshTabIcon(tab.id, tab.url);
@@ -363,6 +518,7 @@ async function handleResetSession() {
   const cur = await getSessionState();
   const endedTabId = cur.tabId;
   await setSessionState({ ...DEFAULT_SESSION_STATE });
+  await setPendingStart(endedTabId, null);
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const t = tabs[0];
     if (t) void refreshTabIcon(t.id, t.url);
